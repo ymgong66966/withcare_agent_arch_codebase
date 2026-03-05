@@ -1,0 +1,360 @@
+"""
+Local Chat Server — interactive browser UI for the WithCare agent.
+
+Usage:
+    python chat_server.py          # starts on http://localhost:8000
+    python chat_server.py --port 9000
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import uuid
+
+from dotenv import load_dotenv
+load_dotenv()
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel
+
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(name)s %(levelname)s: %(message)s",
+)
+
+
+class _LogCapture(logging.Handler):
+    """Collects log records into a list during a request."""
+
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.records: list[str] = []
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            self.records.append(self.format(record))
+        except Exception:
+            pass
+
+from state_models import UnifiedState, Meta
+from merge_utils import apply_node_output
+from graph import build_graph, check_prereq_lifecycle
+from ddb_client import get_ddb_resource, USER_REQUEST_TABLE
+from conversation_store import get_conversation_store
+
+_chat_logger = logging.getLogger(__name__)
+
+# ── App setup ────────────────────────────────────────────────────────
+
+app = FastAPI(title="WithCare Chat")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# In-memory conversation store  {conversation_id: UnifiedState}
+_conversations: Dict[str, UnifiedState] = {}
+
+# Lazily-built graph (built once on first request)
+_graph = None
+
+
+def _get_graph():
+    global _graph
+    if _graph is None:
+        _graph = build_graph()
+    return _graph
+
+
+# ── Helpers (same pattern as executor.py / test files) ───────────────
+
+def _init_state(conversation_id: str, user_id: str = "") -> UnifiedState:
+    uid = user_id or f"chat-user-{conversation_id[:8]}"
+    return UnifiedState(
+        meta=Meta(conversation_id=conversation_id, user_id=uid)
+    )
+
+
+def _sanitize_ddb_value(v):
+    """Recursively convert Python types to DynamoDB-safe types."""
+    from datetime import datetime
+    from decimal import Decimal
+    if isinstance(v, datetime):
+        return v.isoformat()
+    elif isinstance(v, float):
+        return Decimal(str(v))
+    elif isinstance(v, dict):
+        return {k: _sanitize_ddb_value(val) for k, val in v.items() if _sanitize_ddb_value(val) is not None}
+    elif isinstance(v, list):
+        return [_sanitize_ddb_value(item) for item in v]
+    elif v is None:
+        return None
+    return v
+
+
+def _consume_ddb_writes(state: UnifiedState) -> UnifiedState:
+    """Persist queued DDB writes, then clear the queue from state."""
+    writes = getattr(state, "ddb_writes", None)
+    if not writes:
+        state.ddb_writes = []
+        return state
+
+    ddb = get_ddb_resource()
+    if ddb is None:
+        state.ddb_writes = []
+        return state
+
+    for write in writes:
+        try:
+            op = write.get("op", "put")
+            table_name = write.get("table", USER_REQUEST_TABLE)
+            if op == "put":
+                table = ddb.Table(table_name)
+                item = _sanitize_ddb_value(write["item"])
+                table.put_item(Item=item)
+            elif op == "update":
+                table = ddb.Table(table_name)
+                params = _sanitize_ddb_value(write["params"])
+                table.update_item(**params)
+            elif op == "delete":
+                table = ddb.Table(table_name)
+                table.delete_item(**write["params"])
+        except Exception as e:
+            _chat_logger.error(f"DDB write failed (non-fatal): {e}")
+
+    state.ddb_writes = []
+    return state
+
+
+def _cleanup_transient(state: UnifiedState) -> UnifiedState:
+    state.__dict__.pop("_mcp_result", None)
+    return state
+
+
+def _last_assistant_message(state: UnifiedState) -> str:
+    for m in reversed(state.messages):
+        if m.role == "assistant":
+            return m.content
+    return ""
+
+
+async def _run_turn(graph, state: UnifiedState, user_message: str):
+    """Run one conversation turn.  Returns (state, debug_info)."""
+    debug: Dict[str, Any] = {"nodes": [], "node_outputs": {}}
+
+    state = apply_node_output(state, {"messages": [{"role": "user", "content": user_message}]})
+    state = _consume_ddb_writes(state)
+    state = _cleanup_transient(state)
+
+    # Persist user message (fire-and-forget)
+    try:
+        conv_store = get_conversation_store()
+        await conv_store.write_message(
+            user_id=state.meta.user_id,
+            conversation_id=state.meta.conversation_id,
+            role="user",
+            content=user_message,
+        )
+    except Exception as e:
+        _chat_logger.warning(f"Failed to persist user message: {e}")
+
+    state_dict = state.model_dump()
+
+    async for event in graph.astream(state_dict):
+        node_name, node_output = next(iter(event.items()))
+        debug["nodes"].append(node_name)
+        # Capture routing decisions from each node for debugging
+        if isinstance(node_output, dict):
+            _chat_logger.info(
+                f"[debug] node '{node_name}' output keys: {list(node_output.keys())}"
+            )
+            routing_snapshot = node_output.get("routing")
+            if routing_snapshot:
+                debug["node_outputs"][node_name] = {
+                    k: v for k, v in routing_snapshot.items()
+                    if k in ("turn_mode", "turn_reason", "llm_recommended_agent",
+                             "current_agent", "conversation_stage", "pending_handoff",
+                             "_catcher_next", "delegator_debug")
+                }
+            # Capture memory/fact debug info from info_collection
+            ic_debug = node_output.get("info_collection_debug")
+            if ic_debug:
+                _chat_logger.info(
+                    f"Captured info_collection_debug from '{node_name}': "
+                    f"keys={list(ic_debug.keys())}"
+                )
+                debug["memory_context"] = ic_debug
+        state = apply_node_output(state, node_output)
+        state = _consume_ddb_writes(state)
+        state = _cleanup_transient(state)
+        state_dict = state.model_dump()
+
+    # Fallback: read from state.__dict__ (setattr'd by apply_node_output)
+    if "memory_context" not in debug:
+        ic_fallback = getattr(state, "info_collection_debug", None)
+        if ic_fallback:
+            _chat_logger.info(
+                f"Captured info_collection_debug from state fallback: "
+                f"keys={list(ic_fallback.keys()) if isinstance(ic_fallback, dict) else type(ic_fallback)}"
+            )
+            debug["memory_context"] = ic_fallback
+
+    # Post-graph: prereq lifecycle check (runs on full Pydantic state)
+    prereq_patch = check_prereq_lifecycle(state)
+    if prereq_patch:
+        debug["nodes"].append("prereq_lifecycle")
+        state = apply_node_output(state, prereq_patch)
+        state = _consume_ddb_writes(state)
+
+    # Persist assistant reply (fire-and-forget)
+    try:
+        assistant_reply = _last_assistant_message(state)
+        if assistant_reply:
+            conv_store = get_conversation_store()
+            await conv_store.write_message(
+                user_id=state.meta.user_id,
+                conversation_id=state.meta.conversation_id,
+                role="assistant",
+                content=assistant_reply,
+            )
+    except Exception as e:
+        _chat_logger.warning(f"Failed to persist assistant message: {e}")
+
+    return state, debug
+
+
+# ── Request / response models ────────────────────────────────────────
+
+class ChatRequest(BaseModel):
+    message: str
+    conversation_id: Optional[str] = None
+    user_id: Optional[str] = None
+
+
+class ResetRequest(BaseModel):
+    conversation_id: str
+
+
+# ── Endpoints ─────────────────────────────────────────────────────────
+
+@app.post("/chat")
+async def chat(req: ChatRequest):
+    import traceback
+
+    conv_id = req.conversation_id or str(uuid.uuid4())
+
+    if conv_id not in _conversations:
+        _conversations[conv_id] = _init_state(conv_id, user_id=req.user_id or "")
+
+    state = _conversations[conv_id]
+    graph = _get_graph()
+
+    # Capture logs for this request
+    log_capture = _LogCapture()
+    log_capture.setFormatter(logging.Formatter("%(name)s %(levelname)s: %(message)s"))
+    root_logger = logging.getLogger()
+    root_logger.addHandler(log_capture)
+
+    try:
+        state, debug = await _run_turn(graph, state, req.message)
+    except Exception as exc:
+        tb = traceback.format_exc()
+        print(f"[chat] ERROR in run_turn: {exc}\n{tb}")
+        return {
+            "reply": f"[Server error] {exc}",
+            "conversation_id": conv_id,
+            "debug": {"error": str(exc), "traceback": tb, "logs": log_capture.records},
+        }
+    finally:
+        root_logger.removeHandler(log_capture)
+
+    _conversations[conv_id] = state
+
+    # Build debug payload
+    active_req = None
+    rm = state.request_manager
+    if rm.active_request_id and rm.active_request_id in rm.requests:
+        r = rm.requests[rm.active_request_id]
+        info_state = r.info_collection_state or {}
+        active_req = {
+            "request_id": r.request_id,
+            "name": r.name,
+            "status": r.status,
+            "stage_detail": r.stage_detail,
+            "awaiting_user_input": r.awaiting_user_input,
+            "slot_refs": r.slot_refs,
+            "request_type": r.request_type,
+            "subject_entity_id": r.subject_entity_id,
+            "info_collection": {
+                "summary": info_state.get("summary_of_collected_info", ""),
+                "readiness": info_state.get("readiness_to_proceed", ""),
+                "turns": info_state.get("conversation_turns_with_agent", 0),
+                "key_info_status": info_state.get("key_info_status", []),
+            },
+        }
+
+    return {
+        "reply": _last_assistant_message(state),
+        "conversation_id": conv_id,
+        "debug": {
+            "nodes_visited": debug["nodes"],
+            "node_routing": debug.get("node_outputs", {}),
+            "current_agent": state.routing.current_agent,
+            "turn_mode": state.routing.turn_mode,
+            "turn_reason": state.routing.turn_reason,
+            "active_request": active_req,
+            "total_requests": len(rm.requests),
+            "pending_queue_size": len(rm.pending_queue),
+            "memory_context": debug.get("memory_context"),
+            "logs": log_capture.records,
+        },
+    }
+
+
+@app.post("/reset")
+async def reset(req: ResetRequest):
+    _conversations.pop(req.conversation_id, None)
+    return {"status": "ok", "conversation_id": req.conversation_id}
+
+
+@app.get("/health")
+async def health():
+    return {"status": "ok", "conversations": len(_conversations)}
+
+
+# ── Static frontend ──────────────────────────────────────────────────
+
+_UI_DIR = Path(__file__).parent / "chat_ui"
+
+
+@app.get("/")
+async def index():
+    return FileResponse(_UI_DIR / "index.html")
+
+
+if _UI_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(_UI_DIR)), name="static")
+
+
+# ── Main ──────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="WithCare Chat Server")
+    parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--host", type=str, default="0.0.0.0")
+    args = parser.parse_args()
+
+    print(f"Starting WithCare chat server on http://localhost:{args.port}")
+    uvicorn.run(app, host=args.host, port=args.port)

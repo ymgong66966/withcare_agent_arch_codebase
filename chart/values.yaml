@@ -1,0 +1,76 @@
+replicaCount: 1
+
+serviceAccount:
+  name: "withcare-agent-sa"
+
+image:
+  repository: ghcr.io/ymgong66966/withcare_agent_arch_codebase
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: LoadBalancer
+  port: 80
+  targetPort: 8000
+
+app:
+  host: "0.0.0.0"
+  logLevel: "INFO"
+  awsRegion: "us-east-2"
+  ddbPrefix: "WithCare_"
+  ddbOff: "0"
+  mcpServerUrl: "http://mcp-server-prod.mcp-server.svc.cluster.local:80/mcp"
+  extraEnv: []
+  secrets:
+    enabled: true
+    name: "withcare-agent-keys"
+
+resources:
+  limits:
+    cpu: "1000m"
+    memory: "1Gi"
+  requests:
+    cpu: "500m"
+    memory: "512Mi"
+
+healthcheck:
+  liveness:
+    path: "/health"
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    path: "/health"
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 2
+  startup:
+    path: "/health"
+    initialDelaySeconds: 15
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 6
+
+securityContext:
+  enabled: true
+
+ingress:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+podAnnotations: {}
+
+podLabels: {}

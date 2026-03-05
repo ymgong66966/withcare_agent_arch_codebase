@@ -1,0 +1,210 @@
+# Request Type Taxonomy — controlled vocabulary for request_type classification
+#
+# LLM selects from this list (selection, not free generation).
+# If no match, use general.information_lookup and flag for taxonomy review.
+#
+# Each entry:
+#   type:        Canonical request_type string
+#   category:    Top-level grouping
+#   description: What this request type covers
+#   typical_slots: Common information needed (for template/skill reference)
+#   related_fact_keys: FactKey namespaces commonly involved
+
+# ─── Insurance ───
+- type: insurance_renewal
+  category: insurance
+  description: Renewing or recertifying an existing insurance plan
+  typical_slots: [plan_type, member_id, renewal_deadline, state]
+  related_fact_keys: [insurance.*, identity.address]
+
+- type: insurance_application
+  category: insurance
+  description: Applying for a new insurance plan
+  typical_slots: [plan_type, state, income_proof, citizenship_status]
+  related_fact_keys: [insurance.*, identity.*, finance.income.*]
+
+- type: insurance_appeal
+  category: insurance
+  description: Appealing a denied insurance claim or coverage decision
+  typical_slots: [plan_type, member_id, claim_id, denial_reason]
+  related_fact_keys: [insurance.*, finance.reimbursement.*]
+
+- type: insurance_prior_auth
+  category: insurance
+  description: Obtaining prior authorization for a service
+  typical_slots: [plan_type, member_id, service_description, provider]
+  related_fact_keys: [insurance.*, provider.*]
+
+- type: insurance_eligibility_check
+  category: insurance
+  description: Checking eligibility for an insurance program
+  typical_slots: [plan_type, state, income_level, age]
+  related_fact_keys: [insurance.*, identity.*, finance.*]
+
+# ─── Medical ───
+- type: find_provider
+  category: medical
+  description: Finding a doctor, specialist, or medical provider
+  typical_slots: [specialty, location, insurance_accepted, language]
+  related_fact_keys: [provider.*, insurance.plan_type, identity.address]
+
+- type: schedule_appointment
+  category: medical
+  description: Scheduling a medical appointment
+  typical_slots: [provider, date_preference, reason, transportation]
+  related_fact_keys: [provider.*, appointment.*, mobility.transfer_assistance]
+
+- type: medication_management
+  category: medical
+  description: Managing medications, understanding interactions or changes
+  typical_slots: [medication_list, concerns, provider]
+  related_fact_keys: [medication.*, medical.allergies, provider.*]
+
+- type: medication_refill
+  category: medical
+  description: Refilling a prescription
+  typical_slots: [medication_name, pharmacy, refill_date]
+  related_fact_keys: [medication.*, provider.pharmacy.*]
+
+- type: symptom_assessment
+  category: medical
+  description: Assessing and understanding symptoms
+  typical_slots: [symptoms, onset, severity, existing_conditions]
+  related_fact_keys: [medical.symptoms_current, medical.conditions]
+
+# ─── Care ───
+- type: find_caregiver
+  category: care
+  description: Finding a home health aide or caregiver
+  typical_slots: [location, budget, language, schedule, care_needs]
+  related_fact_keys: [identity.address, dailycare.*, mobility.*, preference.*]
+
+- type: care_plan_review
+  category: care
+  description: Reviewing or updating a care plan
+  typical_slots: [current_care_plan, changes_needed, care_recipient]
+  related_fact_keys: [dailycare.*, medical.*, mobility.*]
+
+- type: daily_care_setup
+  category: care
+  description: Setting up daily care routines and schedules
+  typical_slots: [adl_needs, schedule, preferences]
+  related_fact_keys: [dailycare.*, preference.routine.*, mobility.*]
+
+- type: respite_care
+  category: care
+  description: Arranging temporary relief care for the primary caregiver
+  typical_slots: [duration, location, care_level, budget]
+  related_fact_keys: [dailycare.*, identity.address, insurance.plan_type]
+
+- type: care_transition
+  category: care
+  description: Transitioning between care settings (home to facility, etc.)
+  typical_slots: [current_setting, target_setting, reason, timeline]
+  related_fact_keys: [dailycare.*, medical.*, mobility.*, insurance.*]
+
+# ─── Benefits ───
+- type: medicaid_application
+  category: benefits
+  description: Applying for Medicaid
+  typical_slots: [state, income, assets, citizenship, household_size]
+  related_fact_keys: [insurance.*, identity.*, finance.*]
+
+- type: medicare_enrollment
+  category: benefits
+  description: Enrolling in Medicare
+  typical_slots: [age, eligibility_reason, current_coverage, enrollment_period]
+  related_fact_keys: [insurance.*, identity.dob]
+
+- type: ssi_ssd_application
+  category: benefits
+  description: Applying for SSI or SSD benefits
+  typical_slots: [disability, work_history, income, assets]
+  related_fact_keys: [medical.conditions, finance.*, identity.*]
+
+- type: benefits_eligibility
+  category: benefits
+  description: Checking eligibility for any benefits program
+  typical_slots: [program_name, state, income, age, disability]
+  related_fact_keys: [identity.*, finance.*, medical.*]
+
+- type: benefits_renewal
+  category: benefits
+  description: Renewing existing benefits
+  typical_slots: [program_name, renewal_deadline, documentation_needed]
+  related_fact_keys: [insurance.*, finance.*]
+
+# ─── Legal ───
+- type: poa_setup
+  category: legal
+  description: Setting up power of attorney
+  typical_slots: [poa_type, designated_person, state]
+  related_fact_keys: [legal.poa.*, identity.*]
+
+- type: guardianship
+  category: legal
+  description: Pursuing legal guardianship
+  typical_slots: [ward, reason, state, current_arrangements]
+  related_fact_keys: [legal.guardianship, identity.*, medical.cognitive_status]
+
+- type: hipaa_release
+  category: legal
+  description: Signing or managing HIPAA release forms
+  typical_slots: [healthcare_providers, designated_recipients]
+  related_fact_keys: [legal.hipaa_release, provider.*]
+
+- type: advance_directive
+  category: legal
+  description: Creating advance directives or living wills
+  typical_slots: [wishes, designated_agent, state]
+  related_fact_keys: [legal.*, identity.*]
+
+# ─── Financial ───
+- type: reimbursement_filing
+  category: financial
+  description: Filing for medical expense reimbursement
+  typical_slots: [claim_amount, service_date, provider, insurance]
+  related_fact_keys: [finance.reimbursement.*, insurance.*, provider.*]
+
+- type: bill_dispute
+  category: financial
+  description: Disputing a medical bill
+  typical_slots: [bill_amount, provider, insurance, dispute_reason]
+  related_fact_keys: [finance.medical_bills.*, insurance.*, provider.*]
+
+- type: cost_estimation
+  category: financial
+  description: Estimating costs for care or medical services
+  typical_slots: [service_type, location, insurance, duration]
+  related_fact_keys: [finance.*, insurance.*, identity.address]
+
+- type: financial_assistance
+  category: financial
+  description: Finding financial assistance programs
+  typical_slots: [need_type, state, income_level, current_benefits]
+  related_fact_keys: [finance.*, identity.*, insurance.*]
+
+# ─── General ───
+- type: information_lookup
+  category: general
+  description: General information query that doesn't fit a specific type
+  typical_slots: [topic, specifics]
+  related_fact_keys: []
+
+- type: emotional_support
+  category: general
+  description: Emotional support or caregiver burnout assistance
+  typical_slots: [concern, support_type]
+  related_fact_keys: [preference.communication.style]
+
+- type: resource_referral
+  category: general
+  description: Referral to community resources or support services
+  typical_slots: [resource_type, location, eligibility]
+  related_fact_keys: [identity.address, insurance.plan_type]
+
+- type: complaint_escalation
+  category: general
+  description: Escalating a complaint or issue to human support
+  typical_slots: [issue_description, urgency, prior_attempts]
+  related_fact_keys: []

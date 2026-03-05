@@ -1,0 +1,78 @@
+# Development configuration for withcare-agent
+replicaCount: 1
+
+serviceAccount:
+  name: "default"
+
+image:
+  repository: ghcr.io/ymgong66966/withcare_agent_arch_codebase
+  tag: develop
+  pullPolicy: Always
+
+service:
+  type: LoadBalancer
+  port: 80
+  targetPort: 8000
+
+app:
+  host: "0.0.0.0"
+  logLevel: "DEBUG"
+  awsRegion: "us-east-2"
+  ddbPrefix: "WithCare_"
+  ddbOff: "1"
+  mcpServerUrl: ""
+  extraEnv: []
+  secrets:
+    enabled: true
+    name: "withcare-agent-keys"
+
+resources:
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+  requests:
+    cpu: "200m"
+    memory: "256Mi"
+
+healthcheck:
+  liveness:
+    path: "/health"
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  readiness:
+    path: "/health"
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 2
+  startup:
+    path: "/health"
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 6
+
+securityContext:
+  enabled: true
+
+ingress:
+  enabled: false
+
+autoscaling:
+  enabled: false
+
+podDisruptionBudget:
+  enabled: false
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+podAnnotations: {}
+
+podLabels:
+  environment: "development"

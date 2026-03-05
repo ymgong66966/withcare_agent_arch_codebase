@@ -1,0 +1,130 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/version: {{ .Chart.AppVersion }}
+    app.kubernetes.io/component: chat-server
+    app.kubernetes.io/part-of: withcare-agent
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Chart.Name }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Chart.Name }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/version: {{ .Chart.AppVersion }}
+        app.kubernetes.io/component: chat-server
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name | default "default" }}
+      {{- if .Values.securityContext.enabled }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      {{- end }}
+      containers:
+      - name: {{ .Chart.Name }}
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        ports:
+        - name: http
+          containerPort: {{ .Values.service.targetPort }}
+          protocol: TCP
+        env:
+        - name: HOST
+          value: {{ .Values.app.host | quote }}
+        - name: PORT
+          value: {{ .Values.service.targetPort | quote }}
+        - name: LOG_LEVEL
+          value: {{ .Values.app.logLevel | quote }}
+        - name: AWS_REGION
+          value: {{ .Values.app.awsRegion | default "us-east-2" | quote }}
+        - name: WITHCARE_DDB_PREFIX
+          value: {{ .Values.app.ddbPrefix | default "WithCare_" | quote }}
+        - name: WITHCARE_DDB_OFF
+          value: {{ .Values.app.ddbOff | default "0" | quote }}
+        - name: MCP_SERVER_URL
+          value: {{ .Values.app.mcpServerUrl | quote }}
+        {{- range .Values.app.extraEnv }}
+        - name: {{ .name }}
+          value: {{ .value | quote }}
+        {{- end }}
+        {{- if .Values.app.secrets.enabled }}
+        - name: ANTHROPIC_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.app.secrets.name }}
+              key: ANTHROPIC_API_KEY
+        - name: TAVILY_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.app.secrets.name }}
+              key: TAVILY_API_KEY
+        - name: FIRECRAWL_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.app.secrets.name }}
+              key: FIRECRAWL_API_KEY
+        - name: OPENAI_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.app.secrets.name }}
+              key: OPENAI_API_KEY
+        - name: LANGCHAIN_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.app.secrets.name }}
+              key: LANGCHAIN_API_KEY
+        - name: LANGSMITH_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.app.secrets.name }}
+              key: LANGSMITH_API_KEY
+        - name: GOOGLE_MAPS_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.app.secrets.name }}
+              key: GOOGLE_MAPS_API_KEY
+        {{- end }}
+        livenessProbe:
+          httpGet:
+            path: {{ .Values.healthcheck.liveness.path }}
+            port: http
+          initialDelaySeconds: {{ .Values.healthcheck.liveness.initialDelaySeconds }}
+          periodSeconds: {{ .Values.healthcheck.liveness.periodSeconds }}
+          timeoutSeconds: {{ .Values.healthcheck.liveness.timeoutSeconds }}
+          failureThreshold: {{ .Values.healthcheck.liveness.failureThreshold }}
+        readinessProbe:
+          httpGet:
+            path: {{ .Values.healthcheck.readiness.path }}
+            port: http
+          initialDelaySeconds: {{ .Values.healthcheck.readiness.initialDelaySeconds }}
+          periodSeconds: {{ .Values.healthcheck.readiness.periodSeconds }}
+          timeoutSeconds: {{ .Values.healthcheck.readiness.timeoutSeconds }}
+          failureThreshold: {{ .Values.healthcheck.readiness.failureThreshold }}
+        startupProbe:
+          httpGet:
+            path: {{ .Values.healthcheck.startup.path }}
+            port: http
+          initialDelaySeconds: {{ .Values.healthcheck.startup.initialDelaySeconds }}
+          periodSeconds: {{ .Values.healthcheck.startup.periodSeconds }}
+          timeoutSeconds: {{ .Values.healthcheck.startup.timeoutSeconds }}
+          failureThreshold: {{ .Values.healthcheck.startup.failureThreshold }}
+        resources:
+          {{- toYaml .Values.resources | nindent 10 }}
+        {{- if .Values.securityContext.enabled }}
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop:
+            - ALL
+          readOnlyRootFilesystem: false
+        {{- end }}

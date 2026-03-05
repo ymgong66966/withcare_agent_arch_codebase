@@ -1,0 +1,707 @@
+# FactKey Registry v0 — Caregiving scenario
+# ~130 canonical keys across 12 namespaces
+#
+# Each key defines:
+#   key:              Canonical path (namespace.facet[.subfacet])
+#   description:      What this fact represents
+#   risk_level:       low | medium | high
+#   value_type:       string | enum | code | date | list | object | number | entity_ref
+#   cardinality:      single | multi
+#   aliases:          Common synonyms / user phrasings (seed list)
+#   examples:         Example values
+#   canonicalization:  Optional normalization rules
+#
+# Namespaces (12):
+#   identity, contact, insurance, medical, provider, appointment,
+#   medication, mobility, dailycare, preference, finance, legal
+
+# ─────────────────────────────────────────────────────────────
+# 1. identity.*
+# ─────────────────────────────────────────────────────────────
+- key: identity.full_name
+  description: Full legal name of the person
+  risk_level: medium
+  value_type: string
+  cardinality: single
+  aliases: [name, 姓名, full name, legal name]
+  examples: ["张小明", "John Smith"]
+
+- key: identity.dob
+  description: Date of birth
+  risk_level: high
+  value_type: date
+  cardinality: single
+  aliases: [birthday, 出生日期, 生日, date of birth, DOB]
+  examples: ["1945-03-15", "March 15, 1945"]
+  canonicalization: ISO8601 date
+
+- key: identity.gender
+  description: Gender identity
+  risk_level: medium
+  value_type: enum
+  cardinality: single
+  aliases: [sex, 性别, gender identity]
+  examples: ["male", "female", "other", "unknown"]
+  canonicalization: lowercase
+
+- key: identity.language_primary
+  description: Primary language spoken
+  risk_level: low
+  value_type: string
+  cardinality: single
+  aliases: [language, 语言, 主要语言, primary language, speaks]
+  examples: ["zh", "en", "es", "ko"]
+  canonicalization: ISO 639-1 code when possible
+
+- key: identity.language_secondary
+  description: Secondary languages spoken
+  risk_level: low
+  value_type: list
+  cardinality: multi
+  aliases: [other languages, 其他语言, second language]
+  examples: [["en", "zh"], ["es"]]
+
+- key: identity.address
+  description: Residential address
+  risk_level: high
+  value_type: object
+  cardinality: single
+  aliases: [home address, 地址, 住址, residence, where they live]
+  examples: [{"line1": "123 Main St", "city": "Chicago", "state": "IL", "zip": "60601"}]
+
+- key: identity.relationship_to_user
+  description: Relationship of this entity to the user
+  risk_level: low
+  value_type: string
+  cardinality: single
+  aliases: [relationship, 关系, is my, relation]
+  examples: ["mom", "dad", "spouse", "grandmother", "self"]
+  canonicalization: lowercase
+
+- key: identity.ssn_last4
+  description: Last 4 digits of Social Security Number
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [SSN, social security, 社安号, last four]
+  examples: ["1234"]
+
+- key: identity.citizenship_status
+  description: Citizenship or immigration status
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [citizen, 身份, immigration status, residency status]
+  examples: ["US citizen", "permanent resident", "undocumented"]
+
+# ─────────────────────────────────────────────────────────────
+# 2. contact.*
+# ─────────────────────────────────────────────────────────────
+- key: contact.primary_phone
+  description: Primary phone number
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [phone, 电话, 手机, phone number, cell, mobile]
+  examples: ["312-555-0100"]
+
+- key: contact.secondary_phone
+  description: Secondary or backup phone number
+  risk_level: medium
+  value_type: string
+  cardinality: multi
+  aliases: [other phone, backup number, 备用电话]
+  examples: ["312-555-0200"]
+
+- key: contact.email
+  description: Email address
+  risk_level: medium
+  value_type: string
+  cardinality: multi
+  aliases: [email address, 邮箱, e-mail]
+  examples: ["user@example.com"]
+
+- key: contact.preferred_channel
+  description: Preferred communication channel
+  risk_level: low
+  value_type: enum
+  cardinality: single
+  aliases: [contact preference, 联系方式, how to reach]
+  examples: ["phone", "sms", "email", "app"]
+
+- key: contact.emergency_contact
+  description: Emergency contact person
+  risk_level: high
+  value_type: object
+  cardinality: multi
+  aliases: [emergency number, 紧急联系人, ICE contact]
+  examples: [{"name": "Jane Doe", "relationship": "daughter", "phone": "312-555-0300"}]
+
+- key: contact.caregiver_support_network
+  description: People in the caregiving support network
+  risk_level: medium
+  value_type: list
+  cardinality: multi
+  aliases: [support network, helpers, 帮手, family helpers, care team]
+  examples: [["aunt", "neighbor", "church friend"]]
+
+# ─────────────────────────────────────────────────────────────
+# 3. insurance.*
+# ─────────────────────────────────────────────────────────────
+- key: insurance.plan_type
+  description: Type of insurance plan
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [insurance type, 保险类型, plan, coverage type, 医保]
+  examples: ["medicaid", "medicare", "commercial", "none", "unknown"]
+  canonicalization: lowercase
+
+- key: insurance.plan_name
+  description: Specific insurance plan name
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [insurance name, 保险名称, plan name, carrier]
+  examples: ["Blue Cross Blue Shield", "UnitedHealthcare"]
+
+- key: insurance.member_id
+  description: Insurance member/policy ID number
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [member id, policy number, 卡号, 会员号, plan id, insurance id, medicaid id, 保险号]
+  examples: ["ABC123456"]
+  canonicalization: uppercase, strip spaces
+
+- key: insurance.group_number
+  description: Insurance group number
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [group number, group id, 组号]
+  examples: ["GRP-7890"]
+
+- key: insurance.payer_phone
+  description: Insurance company phone number
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [insurance phone, payer phone, 保险公司电话]
+  examples: ["1-800-555-0100"]
+
+- key: insurance.effective_date
+  description: Date insurance coverage became effective
+  risk_level: high
+  value_type: date
+  cardinality: single
+  aliases: [start date, coverage start, 生效日期]
+  examples: ["2026-01-01"]
+
+- key: insurance.renewal_deadline
+  description: Deadline for insurance renewal or recertification
+  risk_level: high
+  value_type: date
+  cardinality: single
+  aliases: [renewal date, recertification deadline, 续保日期, 到期日]
+  examples: ["2026-12-31"]
+
+- key: insurance.state
+  description: State where insurance is held
+  risk_level: medium
+  value_type: code
+  cardinality: single
+  aliases: [insurance state, coverage state, 保险所在州]
+  examples: ["IL", "CA", "NY"]
+  canonicalization: uppercase two-letter state code
+
+- key: insurance.coverage_notes
+  description: Notes about coverage details or limitations
+  risk_level: medium
+  value_type: string
+  cardinality: single
+  aliases: [coverage details, coverage info, 保险备注]
+  examples: ["Requires prior authorization for home health"]
+
+- key: insurance.prior_auth_required
+  description: Whether prior authorization is required
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [prior auth, pre-authorization, 预授权]
+  examples: ["yes", "no", "unknown"]
+
+# ─────────────────────────────────────────────────────────────
+# 4. medical.*
+# ─────────────────────────────────────────────────────────────
+- key: medical.conditions
+  description: Known medical conditions
+  risk_level: high
+  value_type: list
+  cardinality: multi
+  aliases: [diagnosis, 疾病, conditions, medical history, health conditions, 病史]
+  examples: [[{"name": "diabetes type 2", "status": "active"}, {"name": "hypertension", "status": "active"}]]
+
+- key: medical.allergies
+  description: Known allergies
+  risk_level: high
+  value_type: list
+  cardinality: multi
+  aliases: [allergic to, 过敏, allergy, drug allergy]
+  examples: [["penicillin", "shellfish"]]
+
+- key: medical.diagnoses_recent
+  description: Recent diagnoses within last 6 months
+  risk_level: high
+  value_type: list
+  cardinality: multi
+  aliases: [recent diagnosis, 最近诊断, new diagnosis]
+  examples: [["UTI - Jan 2026", "fall - Feb 2026"]]
+
+- key: medical.vitals.baseline_bp
+  description: Baseline blood pressure
+  risk_level: medium
+  value_type: string
+  cardinality: single
+  aliases: [blood pressure, 血压, BP]
+  examples: ["130/80"]
+
+- key: medical.vitals.baseline_weight
+  description: Baseline weight
+  risk_level: medium
+  value_type: string
+  cardinality: single
+  aliases: [weight, 体重]
+  examples: ["150 lbs", "68 kg"]
+
+- key: medical.risk.fall_risk
+  description: Fall risk assessment level
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [fall risk, 跌倒风险, fall hazard]
+  examples: ["low", "medium", "high", "unknown"]
+
+- key: medical.cognitive_status
+  description: Cognitive function status
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [cognitive, 认知状态, memory, dementia status, mental status]
+  examples: ["normal", "mci", "dementia", "unknown"]
+
+- key: medical.symptoms_current
+  description: Current symptoms being experienced
+  risk_level: medium
+  value_type: list
+  cardinality: multi
+  aliases: [symptoms, 症状, current complaints, 目前的问题]
+  examples: [["fatigue", "dizziness", "loss of appetite"]]
+
+- key: medical.surgical_history
+  description: Past surgical procedures
+  risk_level: high
+  value_type: list
+  cardinality: multi
+  aliases: [surgery, 手术史, past surgeries, operations]
+  examples: [["hip replacement 2024", "cataract surgery 2023"]]
+
+# ─────────────────────────────────────────────────────────────
+# 5. provider.*
+# ─────────────────────────────────────────────────────────────
+- key: provider.primary_care.name
+  description: Primary care physician name
+  risk_level: medium
+  value_type: string
+  cardinality: single
+  aliases: [PCP, 主治医生, doctor, family doctor, primary doctor]
+  examples: ["Dr. Chen Wei"]
+
+- key: provider.primary_care.phone
+  description: Primary care physician phone number
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [doctor phone, PCP phone, 医生电话]
+  examples: ["312-555-0400"]
+
+- key: provider.specialists
+  description: Specialist doctors
+  risk_level: medium
+  value_type: list
+  cardinality: multi
+  aliases: [specialist, 专科医生, specialists]
+  examples: [[{"specialty": "cardiology", "name": "Dr. Li", "phone": "312-555-0500"}]]
+
+- key: provider.preferred_hospital
+  description: Preferred hospital
+  risk_level: medium
+  value_type: string
+  cardinality: single
+  aliases: [hospital, 医院, preferred hospital]
+  examples: ["Northwestern Memorial Hospital"]
+
+- key: provider.pharmacy.name
+  description: Pharmacy name
+  risk_level: medium
+  value_type: string
+  cardinality: single
+  aliases: [pharmacy, 药房, drugstore]
+  examples: ["Walgreens on Clark St"]
+
+- key: provider.pharmacy.phone
+  description: Pharmacy phone number
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [pharmacy phone, 药房电话]
+  examples: ["312-555-0600"]
+
+- key: provider.pharmacy.address
+  description: Pharmacy address
+  risk_level: high
+  value_type: object
+  cardinality: single
+  aliases: [pharmacy location, pharmacy address, 药房地址]
+  examples: [{"line1": "456 Clark St", "city": "Chicago", "state": "IL", "zip": "60610"}]
+
+# ─────────────────────────────────────────────────────────────
+# 6. appointment.*
+# ─────────────────────────────────────────────────────────────
+- key: appointment.next.date_time
+  description: Next upcoming appointment date and time
+  risk_level: medium
+  value_type: date
+  cardinality: single
+  aliases: [next appointment, 下次预约, upcoming visit]
+  examples: ["2026-03-15T10:00:00"]
+
+- key: appointment.next.location
+  description: Location of next appointment
+  risk_level: medium
+  value_type: string
+  cardinality: single
+  aliases: [appointment location, where is the appointment, 预约地点]
+  examples: ["Northwestern Memorial Hospital, Room 302"]
+
+- key: appointment.next.reason
+  description: Reason for next appointment
+  risk_level: medium
+  value_type: string
+  cardinality: single
+  aliases: [appointment reason, why, 预约原因]
+  examples: ["Annual checkup", "Follow-up on blood work"]
+
+- key: appointment.transportation_needed
+  description: Whether transportation assistance is needed
+  risk_level: medium
+  value_type: enum
+  cardinality: single
+  aliases: [needs ride, transportation, 需要接送, ride needed]
+  examples: ["yes", "no", "unknown"]
+
+- key: appointment.followup_interval
+  description: Regular follow-up interval
+  risk_level: low
+  value_type: string
+  cardinality: single
+  aliases: [follow-up schedule, 复查频率, how often]
+  examples: ["every 3 months", "monthly", "annually"]
+
+# ─────────────────────────────────────────────────────────────
+# 7. medication.*
+# ─────────────────────────────────────────────────────────────
+- key: medication.current_list
+  description: Current medications with dosage and frequency
+  risk_level: high
+  value_type: list
+  cardinality: multi
+  aliases: [medications, meds, 药物, 用药, drug list, prescriptions, 吃什么药]
+  examples: [[{"name": "Metformin", "dose": "500mg", "frequency": "twice daily"}]]
+
+- key: medication.adherence.issues
+  description: Medication adherence issues
+  risk_level: high
+  value_type: list
+  cardinality: multi
+  aliases: [not taking meds, 忘记吃药, missed doses, adherence problems]
+  examples: [["forgets evening dose", "cost too high"]]
+
+- key: medication.refill.next_date
+  description: Next medication refill date
+  risk_level: medium
+  value_type: date
+  cardinality: single
+  aliases: [refill date, 续药日期, when to refill]
+  examples: ["2026-03-01"]
+
+- key: medication.refill.pharmacy
+  description: Pharmacy for refills
+  risk_level: medium
+  value_type: entity_ref
+  cardinality: single
+  aliases: [refill pharmacy, 续药药房]
+  examples: ["provider.pharmacy"]
+
+- key: medication.side_effects_reported
+  description: Reported medication side effects
+  risk_level: high
+  value_type: list
+  cardinality: multi
+  aliases: [side effects, 副作用, drug reactions]
+  examples: [["nausea from Metformin", "dizziness from Lisinopril"]]
+
+# ─────────────────────────────────────────────────────────────
+# 8. mobility.*
+# ─────────────────────────────────────────────────────────────
+- key: mobility.assistive_devices
+  description: Assistive devices used
+  risk_level: medium
+  value_type: list
+  cardinality: multi
+  aliases: [walker, cane, wheelchair, 助行器, 拐杖, 轮椅, mobility aids]
+  examples: [["walker", "grab bars in bathroom"]]
+
+- key: mobility.stairs_at_home
+  description: Whether there are stairs at home
+  risk_level: medium
+  value_type: enum
+  cardinality: single
+  aliases: [stairs, 楼梯, steps at home]
+  examples: ["yes", "no", "unknown"]
+
+- key: mobility.walking_limit
+  description: Walking distance limitation
+  risk_level: medium
+  value_type: string
+  cardinality: single
+  aliases: [how far can walk, 步行能力, walking ability, 走路]
+  examples: ["50 feet with walker", "housebound"]
+
+- key: mobility.transfer_assistance
+  description: Level of assistance needed for transfers
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [transfer help, 转移辅助, needs help getting up]
+  examples: ["independent", "needs_help", "unable"]
+
+# ─────────────────────────────────────────────────────────────
+# 9. dailycare.*
+# ─────────────────────────────────────────────────────────────
+- key: dailycare.adl.bathing
+  description: Bathing assistance level (ADL)
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [bathing, 洗澡, shower help, bath assistance]
+  examples: ["independent", "partial", "full"]
+
+- key: dailycare.adl.dressing
+  description: Dressing assistance level (ADL)
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [dressing, 穿衣, getting dressed]
+  examples: ["independent", "partial", "full"]
+
+- key: dailycare.adl.toileting
+  description: Toileting assistance level (ADL)
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [toileting, 如厕, bathroom help, incontinence]
+  examples: ["independent", "partial", "full"]
+
+- key: dailycare.meal_prep
+  description: Meal preparation ability
+  risk_level: medium
+  value_type: enum
+  cardinality: single
+  aliases: [cooking, 做饭, meal preparation, can they cook]
+  examples: ["independent", "needs_help", "unable"]
+
+- key: dailycare.sleep_pattern
+  description: Sleep pattern information
+  risk_level: medium
+  value_type: string
+  cardinality: single
+  aliases: [sleep, 睡眠, sleep schedule, insomnia]
+  examples: ["Sleeps 10pm-6am", "Wakes frequently at night"]
+
+- key: dailycare.behavioral_triggers
+  description: Known behavioral triggers or patterns
+  risk_level: medium
+  value_type: list
+  cardinality: multi
+  aliases: [triggers, 行为触发, sundowning, agitation triggers]
+  examples: [["loud noises", "unfamiliar people", "evening confusion"]]
+
+- key: dailycare.home_safety.concerns
+  description: Home safety concerns
+  risk_level: high
+  value_type: list
+  cardinality: multi
+  aliases: [safety concerns, 安全问题, hazards, home safety]
+  examples: [["stove left on", "fall risk in bathroom", "wandering"]]
+
+# ─────────────────────────────────────────────────────────────
+# 10. preference.*
+# ─────────────────────────────────────────────────────────────
+- key: preference.food.like
+  description: Preferred foods
+  risk_level: low
+  value_type: list
+  cardinality: multi
+  aliases: [likes to eat, 喜欢吃, favorite food, food preference]
+  examples: [["congee", "dumplings", "fruit"]]
+
+- key: preference.food.dislike
+  description: Disliked or avoided foods
+  risk_level: low
+  value_type: list
+  cardinality: multi
+  aliases: [doesn't like, 不喜欢吃, food aversion, won't eat]
+  examples: [["spicy food", "raw fish"]]
+
+- key: preference.taste.like
+  description: Taste preferences
+  risk_level: low
+  value_type: list
+  cardinality: multi
+  aliases: [taste preference, 口味, flavor preference]
+  examples: [["sweet", "mild"]]
+
+- key: preference.color.like
+  description: Color preferences
+  risk_level: low
+  value_type: list
+  cardinality: multi
+  aliases: [favorite color, 颜色偏好, color preference]
+  examples: [["blue", "red"]]
+
+- key: preference.activity.like
+  description: Preferred activities or hobbies
+  risk_level: low
+  value_type: list
+  cardinality: multi
+  aliases: [hobbies, 爱好, activities, likes to do, 活动]
+  examples: [["tai chi", "mahjong", "walking", "gardening"]]
+
+- key: preference.communication.style
+  description: Preferred communication style
+  risk_level: low
+  value_type: string
+  cardinality: single
+  aliases: [communication preference, 沟通方式, how to talk]
+  examples: ["direct", "gentle", "step-by-step", "bilingual"]
+
+- key: preference.routine.morning
+  description: Preferred morning routine
+  risk_level: low
+  value_type: string
+  cardinality: single
+  aliases: [morning routine, 早上习惯, morning schedule]
+  examples: ["Wakes at 6am, tea first, then light exercise"]
+
+- key: preference.routine.evening
+  description: Preferred evening routine
+  risk_level: low
+  value_type: string
+  cardinality: single
+  aliases: [evening routine, 晚上习惯, bedtime routine]
+  examples: ["Dinner at 5:30pm, TV until 9pm, bed by 9:30pm"]
+
+- key: preference.environment.temperature
+  description: Temperature preference
+  risk_level: low
+  value_type: string
+  cardinality: single
+  aliases: [temperature, 温度, room temperature, 冷热]
+  examples: ["warm (72-75F)", "cool"]
+
+# ─────────────────────────────────────────────────────────────
+# 11. finance.*
+# ─────────────────────────────────────────────────────────────
+- key: finance.income.proof_available
+  description: Whether proof of income is available
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [income proof, 收入证明, proof of income]
+  examples: ["yes", "no", "unknown"]
+
+- key: finance.medical_bills.recent
+  description: Recent medical bills
+  risk_level: high
+  value_type: list
+  cardinality: multi
+  aliases: [medical bills, 医疗账单, hospital bills]
+  examples: [["ER visit $2,500 - Jan 2026"]]
+
+- key: finance.reimbursement.claim_status
+  description: Current reimbursement claim status
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [claim status, 报销状态, reimbursement status]
+  examples: ["submitted", "pending", "approved", "denied"]
+
+- key: finance.reimbursement.claim_id
+  description: Reimbursement claim ID number
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [claim id, claim number, 报销编号]
+  examples: ["CLM-2026-001"]
+
+- key: finance.out_of_pocket.monthly_estimate
+  description: Estimated monthly out-of-pocket costs
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [monthly cost, 每月费用, out of pocket, 自费]
+  examples: ["$500-800/month"]
+
+# ─────────────────────────────────────────────────────────────
+# 12. legal.*
+# ─────────────────────────────────────────────────────────────
+- key: legal.poa.medical
+  description: Whether medical power of attorney is in place
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [medical POA, healthcare proxy, 医疗委托, 医疗授权]
+  examples: ["yes", "no", "unknown"]
+
+- key: legal.poa.financial
+  description: Whether financial power of attorney is in place
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [financial POA, 财务委托, 财务授权]
+  examples: ["yes", "no", "unknown"]
+
+- key: legal.hipaa_release
+  description: Whether HIPAA release is signed
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [HIPAA, HIPAA authorization, 隐私授权]
+  examples: ["yes", "no", "unknown"]
+
+- key: legal.guardianship
+  description: Whether legal guardianship is in place
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [guardianship, 监护权, legal guardian]
+  examples: ["yes", "no", "unknown"]
+
+- key: legal.documents.storage_location
+  description: Where legal documents are stored
+  risk_level: medium
+  value_type: string
+  cardinality: single
+  aliases: [document location, 文件位置, where are the papers]
+  examples: ["Safe deposit box at Chase bank", "Filing cabinet at home"]
