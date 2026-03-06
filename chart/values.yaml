@@ -1,7 +1,7 @@
 replicaCount: 1
 
 serviceAccount:
-  name: "default"
+  name: "withcare-agent-sa"
 
 image:
   repository: ghcr.io/ymgong66966/withcare_agent_arch_codebase
