@@ -23,6 +23,8 @@ spec:
         app.kubernetes.io/component: chat-server
     spec:
       serviceAccountName: {{ .Values.serviceAccount.name | default "default" }}
+      imagePullSecrets:
+      - name: ghcr-pull-secret
       {{- if .Values.securityContext.enabled }}
       securityContext:
         runAsNonRoot: true
