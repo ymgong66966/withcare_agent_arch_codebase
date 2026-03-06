@@ -51,47 +51,63 @@ class MCPClientManager:
         self._clients[cfg.name] = client
         return client
 
-async def call_mcp_tool_patch(*, mgr: MCPClientManager, server: MCPServerConfig, tool_name: str, arguments: Dict[str, Any], purpose: str = "", timeout_s: float = 60) -> Dict[str, Any]:
+async def call_mcp_tool_patch(*, mgr: MCPClientManager, server: MCPServerConfig, tool_name: str, arguments: Dict[str, Any], purpose: str = "", timeout_s: float = 120, max_retries: int = 2) -> Dict[str, Any]:
     run_id = new_uuid("toolrun")
-    client = mgr.get_client(server)
 
     tool_run = {"run_id": run_id, "tool": f"mcp:{server.name}:{tool_name}", "purpose": purpose, "args": arguments, "status": "ok"}
 
-    try:
-        async with client:
-            result = await asyncio.wait_for(
-                client.call_tool(tool_name, arguments),
-                timeout=timeout_s,
-            )
+    last_error = None
+    for attempt in range(1, max_retries + 1):
+        try:
+            # Create a fresh client for each attempt to avoid stale connections
+            client = mgr.get_client(server)
+            async with client:
+                result = await asyncio.wait_for(
+                    client.call_tool(tool_name, arguments),
+                    timeout=timeout_s,
+                )
 
-        # FastMCP CallToolResult stores the real payload in different places
-        # depending on version.  Prefer structured_content (already a dict/list),
-        # then fall back to parsing the text from the first content block.
-        data = None
-        sc = getattr(result, "structured_content", None)
-        if sc is not None:
-            # structured_content is typically {"result": <actual_data>}
-            data = sc.get("result") if isinstance(sc, dict) else sc
-        if data is None:
-            # Fall back to parsing the text content
-            content = getattr(result, "content", None) or []
-            if content and hasattr(content[0], "text"):
-                import json as _mcp_json
-                try:
-                    data = _mcp_json.loads(content[0].text)
-                except (ValueError, TypeError):
-                    data = content[0].text
+            # FastMCP CallToolResult stores the real payload in different places
+            # depending on version.  Prefer structured_content (already a dict/list),
+            # then fall back to parsing the text from the first content block.
+            data = None
+            sc = getattr(result, "structured_content", None)
+            if sc is not None:
+                # structured_content is typically {"result": <actual_data>}
+                data = sc.get("result") if isinstance(sc, dict) else sc
+            if data is None:
+                # Fall back to parsing the text content
+                content = getattr(result, "content", None) or []
+                if content and hasattr(content[0], "text"):
+                    import json as _mcp_json
+                    try:
+                        data = _mcp_json.loads(content[0].text)
+                    except (ValueError, TypeError):
+                        data = content[0].text
 
-        return {"tools": {"tool_runs": [tool_run]}, "_mcp_result": {"run_id": run_id, "server": server.name, "tool": tool_name, "data": data}}
-    except asyncio.TimeoutError:
-        _mcp_logger.error(f"MCP tool {server.name}:{tool_name} timed out after {timeout_s}s")
-        tool_run["status"] = "failed"
-        tool_run["error"] = f"Timed out after {timeout_s}s"
-        return {"tools": {"tool_runs": [tool_run], "tool_failures": [{"tool": tool_run["tool"], "error": f"Timed out after {timeout_s}s", "recoverable": True}]}}
-    except Exception as e:
-        tool_run["status"] = "failed"
-        tool_run["error"] = repr(e)
-        return {"tools": {"tool_runs": [tool_run], "tool_failures": [{"tool": tool_run["tool"], "error": repr(e), "recoverable": True}]}}
+            return {"tools": {"tool_runs": [tool_run]}, "_mcp_result": {"run_id": run_id, "server": server.name, "tool": tool_name, "data": data}}
+        except asyncio.TimeoutError:
+            _mcp_logger.error(f"MCP tool {server.name}:{tool_name} timed out after {timeout_s}s (attempt {attempt}/{max_retries})")
+            last_error = f"Timed out after {timeout_s}s"
+            if attempt < max_retries:
+                # Clear cached client to force fresh connection on retry
+                mgr._clients.pop(server.name, None)
+                await asyncio.sleep(1)
+                continue
+            break
+        except Exception as e:
+            _mcp_logger.error(f"MCP tool {server.name}:{tool_name} failed: {repr(e)} (attempt {attempt}/{max_retries})")
+            last_error = repr(e)
+            if attempt < max_retries:
+                # Clear cached client to force fresh connection on retry
+                mgr._clients.pop(server.name, None)
+                await asyncio.sleep(2)
+                continue
+            break
+
+    tool_run["status"] = "failed"
+    tool_run["error"] = last_error
+    return {"tools": {"tool_runs": [tool_run], "tool_failures": [{"tool": tool_run["tool"], "error": last_error, "recoverable": True}]}}
 
 
 async def call_memory_tool(

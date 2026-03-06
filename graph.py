@@ -1763,6 +1763,7 @@ async def deep_search_node(state: Dict[str, Any]) -> Dict[str, Any]:
             tool_name=tool_name,
             arguments=tool_args,
             purpose=f"Deep search iteration {iteration}: {tool_name}",
+            timeout_s=180,
         )
         _deep_search_logger.info(f"[LOOP] MCP tool returned. Keys: {list(tool_patch.keys())}")
 

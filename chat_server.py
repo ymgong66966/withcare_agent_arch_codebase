@@ -254,7 +254,28 @@ async def chat(req: ChatRequest):
     conv_id = req.conversation_id or str(uuid.uuid4())
 
     if conv_id not in _conversations:
-        _conversations[conv_id] = _init_state(conv_id, user_id=req.user_id or "")
+        state = _init_state(conv_id, user_id=req.user_id or "")
+
+        # Restore previous messages from DynamoDB (survives pod restarts)
+        try:
+            conv_store = get_conversation_store()
+            previous_msgs = await conv_store.get_messages_for_conversation(conv_id)
+            if previous_msgs:
+                restored = []
+                for msg in previous_msgs:
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+                    if role in ("user", "assistant") and content:
+                        restored.append(ChatMessage(role=role, content=content))
+                if restored:
+                    state.messages = restored
+                    _chat_logger.info(
+                        f"Restored {len(restored)} messages from DDB for conv {conv_id[:8]}"
+                    )
+        except Exception as e:
+            _chat_logger.warning(f"Failed to restore messages from DDB: {e}")
+
+        _conversations[conv_id] = state
 
     state = _conversations[conv_id]
     graph = _get_graph()
