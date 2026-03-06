@@ -1864,8 +1864,24 @@ async def user_info_node(state: Dict[str, Any]) -> Dict[str, Any]:
         user_id=user_id,
     )
 
-    # ── Retrieve facts for the entity ──
-    entity_id = req.get("subject_entity_id") or ""
+    # ── Resolve entity from user text (not just from the active request) ──
+    entity_id = ""
+    if user_text:
+        try:
+            from fact_store import get_fact_store as _get_fs_info
+            _fs_info = _get_fs_info()
+            _known_eids = await _fs_info.get_user_entities(user_id) if user_id else []
+        except Exception:
+            _known_eids = []
+        try:
+            from prompts import _infer_subject_entity
+            entity_id = await _infer_subject_entity(user_text, client=client, known_entity_ids=_known_eids)
+        except Exception as e:
+            _logger.debug(f"user_info: entity inference failed: {e}")
+
+    if not entity_id or entity_id == "care_recipient:unknown":
+        entity_id = req.get("subject_entity_id") or ""
+
     profile_facts = {}
     recent_events = []
 
@@ -1924,38 +1940,96 @@ async def user_info_node(state: Dict[str, Any]) -> Dict[str, Any]:
             for e in recent_events[:10]
         )
 
-    # ── Fetch request history ──
+    # ── Multi-round query loop (max 3 rounds) ──
     request_summaries = []
+    all_query_results = {}
+    _query_loop_ok = False
+
     if user_id:
         try:
-            recent_reqs = await call_memory_tool(
-                mgr=MCP_MGR, server=MEMORY_SERVER,
-                tool_name="memory_list_recent_requests",
-                arguments={"user_id": user_id, "limit": 10},
-                timeout_ms=3000,
-            )
-            if isinstance(recent_reqs, list):
-                request_summaries.extend(recent_reqs)
-        except Exception as e:
-            _logger.debug(f"user_info: recent requests fetch failed: {e}")
-
-        # Entity-specific requests (if entity resolved)
-        if entity_id:
-            try:
-                entity_reqs = await call_memory_tool(
+            previous_summary = ""
+            for query_round in range(3):
+                # Step A: Generate query plan
+                plan = await call_memory_tool(
                     mgr=MCP_MGR, server=MEMORY_SERVER,
-                    tool_name="memory_get_requests_by_entity",
-                    arguments={"entity_id": entity_id, "limit": 10},
+                    tool_name="memory_query_planner",
+                    arguments={
+                        "user_question": user_text,
+                        "user_id": user_id,
+                        "known_entity_ids": [entity_id] if entity_id else [],
+                        "previous_results_summary": previous_summary,
+                    },
+                    timeout_ms=5000,
+                )
+
+                steps = plan.get("steps", []) if isinstance(plan, dict) else []
+                if not steps:
+                    break
+
+                _query_loop_ok = True
+
+                # Step B: Execute each query step
+                round_results = {}
+                for step in steps:
+                    result = await call_memory_tool(
+                        mgr=MCP_MGR, server=MEMORY_SERVER,
+                        tool_name="memory_execute_query",
+                        arguments={
+                            "user_id": user_id,
+                            "table": step["table"],
+                            "method": step["method"],
+                            "params": step.get("params", {}),
+                        },
+                        timeout_ms=4000,
+                    )
+                    round_results[step.get("description", f"step_{step['step_id']}")] = result
+
+                all_query_results.update(round_results)
+
+                # Step C: Build summary for potential next round
+                previous_summary = json.dumps({
+                    k: {"count": v.get("result_count", 0), "table": v.get("table")}
+                    for k, v in round_results.items()
+                    if isinstance(v, dict)
+                }, ensure_ascii=False)
+
+                # If planner didn't indicate follow-up needed, stop
+                if not (isinstance(plan, dict) and plan.get("needs_followup", False)):
+                    break
+
+        except Exception as e:
+            _logger.debug(f"user_info: query loop failed: {e}")
+
+        # Extract request summaries from query results
+        for key, result in all_query_results.items():
+            if isinstance(result, dict) and result.get("table") == "requests":
+                items = result.get("results", [])
+                if isinstance(items, list):
+                    request_summaries.extend(items)
+
+        # Dedup by request_id
+        seen_ids = set()
+        deduped = []
+        for r in request_summaries:
+            rid_val = r.get("request_id") if isinstance(r, dict) else None
+            if rid_val and rid_val not in seen_ids:
+                seen_ids.add(rid_val)
+                deduped.append(r)
+        request_summaries = deduped
+
+        # Fallback: if query planner was unavailable, use legacy approach
+        if not _query_loop_ok:
+            try:
+                recent_reqs = await call_memory_tool(
+                    mgr=MCP_MGR, server=MEMORY_SERVER,
+                    tool_name="memory_list_recent_requests",
+                    arguments={"user_id": user_id, "limit": 10},
                     timeout_ms=3000,
                 )
-                if isinstance(entity_reqs, list):
-                    # Merge, dedup by request_id
-                    seen = {r.get("request_id") for r in request_summaries}
-                    for r in entity_reqs:
-                        if r.get("request_id") not in seen:
-                            request_summaries.append(r)
+                if isinstance(recent_reqs, list):
+                    request_summaries.extend(recent_reqs)
             except Exception as e:
-                _logger.debug(f"user_info: entity requests fetch failed: {e}")
+                _logger.debug(f"user_info: fallback recent requests fetch failed: {e}")
 
     # Build request history block
     # Sort by created_at descending (safety net in case the store doesn't sort)
