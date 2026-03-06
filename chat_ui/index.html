@@ -69,6 +69,27 @@ body {
   border-radius: 0.3rem;
 }
 
+.user-id-input {
+  font-family: monospace;
+  font-size: 0.75rem;
+  background: rgba(255,255,255,0.15);
+  color: white;
+  border: 1px solid rgba(255,255,255,0.3);
+  padding: 0.2rem 0.5rem;
+  border-radius: 0.3rem;
+  width: 140px;
+  outline: none;
+}
+
+.user-id-input::placeholder {
+  color: rgba(255,255,255,0.5);
+}
+
+.user-id-input:focus {
+  background: rgba(255,255,255,0.25);
+  border-color: rgba(255,255,255,0.6);
+}
+
 /* ── Messages ───────────────────────────────────── */
 
 .messages-container {
@@ -317,7 +338,7 @@ body {
   <div class="chat-header">
     <h1>WithCare Agent</h1>
     <div class="header-controls">
-      <span class="conv-id" id="userIdDisplay"></span>
+      <input type="text" class="user-id-input" id="userIdInput" placeholder="Enter user ID..." />
       <span class="conv-id" id="convIdDisplay">New conversation</span>
       <button class="reset-button" onclick="resetConversation()">Reset</button>
     </div>
@@ -351,14 +372,25 @@ let conversationId = null;
 let messages = [];      // {role, content, debug?}
 let isLoading = false;
 
+// userId: load from URL param first, then localStorage
 const urlParams = new URLSearchParams(window.location.search);
-const userId = urlParams.get('userId') || null;
+const savedUserId = urlParams.get('userId') || localStorage.getItem('withcare_user_id') || '';
 
-const userIdEl = document.getElementById('userIdDisplay');
-if (userId) {
-  userIdEl.textContent = 'user: ' + userId;
-} else {
-  userIdEl.textContent = 'no userId';
+const userIdInput = document.getElementById('userIdInput');
+userIdInput.value = savedUserId;
+
+// Save to localStorage on change
+userIdInput.addEventListener('change', () => {
+  const val = userIdInput.value.trim();
+  if (val) {
+    localStorage.setItem('withcare_user_id', val);
+  } else {
+    localStorage.removeItem('withcare_user_id');
+  }
+});
+
+function getUserId() {
+  return userIdInput.value.trim() || null;
 }
 
 const container    = document.getElementById('messagesContainer');
@@ -402,7 +434,7 @@ async function sendMessage() {
       body: JSON.stringify({
         message: text,
         conversation_id: conversationId,
-        user_id: userId,
+        user_id: getUserId(),
       }),
     });
 
