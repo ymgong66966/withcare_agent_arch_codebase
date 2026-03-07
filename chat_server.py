@@ -266,6 +266,20 @@ async def _run_turn(graph, state: UnifiedState, user_message: str):
     """Run one conversation turn.  Returns (state, debug_info)."""
     debug: Dict[str, Any] = {"nodes": [], "node_outputs": {}}
 
+    # Create Langfuse trace for this turn
+    _lf_trace = None
+    try:
+        from anthropic_client import langfuse as _lf
+        if _lf:
+            _lf_trace = _lf.trace(
+                name="chat-turn",
+                session_id=state.meta.conversation_id,
+                user_id=state.meta.user_id,
+                input=user_message,
+            )
+    except Exception:
+        pass
+
     state = apply_node_output(state, {"messages": [{"role": "user", "content": user_message}]})
     state = _consume_ddb_writes(state)
     state = _cleanup_transient(state)
@@ -283,6 +297,8 @@ async def _run_turn(graph, state: UnifiedState, user_message: str):
         _chat_logger.warning(f"Failed to persist user message: {e}")
 
     state_dict = state.model_dump()
+    if _lf_trace:
+        state_dict["_langfuse_trace"] = _lf_trace
 
     async for event in graph.astream(state_dict):
         node_name, node_output = next(iter(event.items()))
@@ -354,6 +370,24 @@ async def _run_turn(graph, state: UnifiedState, user_message: str):
         )
     except Exception as e:
         _chat_logger.warning(f"Failed to persist checkpoint: {e}")
+
+    # Finalize Langfuse trace with debug metadata
+    if _lf_trace:
+        try:
+            _lf_trace.update(
+                output=_last_assistant_message(state),
+                metadata={
+                    "nodes_visited": debug["nodes"],
+                    "current_agent": state.routing.current_agent,
+                    "turn_mode": state.routing.turn_mode,
+                    "turn_reason": state.routing.turn_reason,
+                    "active_request_id": state.request_manager.active_request_id,
+                    "needs_human": state.routing.needs_human,
+                    "conversation_stage": state.routing.conversation_stage,
+                },
+            )
+        except Exception:
+            pass
 
     return state, debug
 

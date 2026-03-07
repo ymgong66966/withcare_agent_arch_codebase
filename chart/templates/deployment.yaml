@@ -95,6 +95,20 @@ spec:
             secretKeyRef:
               name: {{ .Values.app.secrets.name }}
               key: GOOGLE_MAPS_API_KEY
+        - name: LANGFUSE_PUBLIC_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.app.secrets.name }}
+              key: LANGFUSE_PUBLIC_KEY
+              optional: true
+        - name: LANGFUSE_SECRET_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.app.secrets.name }}
+              key: LANGFUSE_SECRET_KEY
+              optional: true
+        - name: LANGFUSE_HOST
+          value: "https://us.cloud.langfuse.com"
         {{- end }}
         livenessProbe:
           httpGet:

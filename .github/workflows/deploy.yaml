@@ -140,6 +140,8 @@ jobs:
           --from-literal=LANGCHAIN_API_KEY="${{ secrets.LANGCHAIN_API_KEY }}" \
           --from-literal=LANGSMITH_API_KEY="${{ secrets.LANGSMITH_API_KEY }}" \
           --from-literal=GOOGLE_MAPS_API_KEY="${{ secrets.GOOGLE_MAPS_API_KEY }}" \
+          --from-literal=LANGFUSE_PUBLIC_KEY="${{ secrets.LANGFUSE_PUBLIC_KEY }}" \
+          --from-literal=LANGFUSE_SECRET_KEY="${{ secrets.LANGFUSE_SECRET_KEY }}" \
           --namespace withcare-agent-dev \
           --dry-run=client -o yaml | kubectl apply -f -
         echo "Kubernetes secrets created/updated successfully"
@@ -234,6 +236,8 @@ jobs:
           --from-literal=LANGCHAIN_API_KEY="${{ secrets.LANGCHAIN_API_KEY }}" \
           --from-literal=LANGSMITH_API_KEY="${{ secrets.LANGSMITH_API_KEY }}" \
           --from-literal=GOOGLE_MAPS_API_KEY="${{ secrets.GOOGLE_MAPS_API_KEY }}" \
+          --from-literal=LANGFUSE_PUBLIC_KEY="${{ secrets.LANGFUSE_PUBLIC_KEY }}" \
+          --from-literal=LANGFUSE_SECRET_KEY="${{ secrets.LANGFUSE_SECRET_KEY }}" \
           --namespace withcare-agent \
           --dry-run=client -o yaml | kubectl apply -f -
         echo "Kubernetes secrets created/updated successfully"

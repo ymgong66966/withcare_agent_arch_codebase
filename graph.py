@@ -84,6 +84,17 @@ def _msg(state: Dict[str, Any], zh: str, en: str) -> str:
     """Return zh or en string based on detected user language."""
     return zh if _detect_user_language(state) == "zh" else en
 
+def _get_langfuse_trace(state: Dict[str, Any]):
+    """Extract the Langfuse trace from state (injected by chat_server)."""
+    return state.get("_langfuse_trace")
+
+def _bind_trace(client, state: Dict[str, Any]):
+    """Bind the Langfuse trace from state onto a TrackedAnthropicClient."""
+    trace = _get_langfuse_trace(state)
+    if trace and hasattr(client, "trace"):
+        client.trace = trace
+    return client
+
 def _get_current_agent(state: Dict[str, Any]) -> Optional[str]:
     return ((state.get("routing") or {}).get("current_agent"))
 
@@ -142,6 +153,7 @@ async def _human_comm_llm_reply(
         agent_role="human_comm",
         user_id=meta.get("user_id", ""),
     )
+    _bind_trace(client, state)
     try:
         resp = await client.create_message(
             model="claude-sonnet-4-20250514",
@@ -284,6 +296,7 @@ async def human_comm_node(state: Dict[str, Any]) -> Dict[str, Any]:
             agent_role="human_comm",
             user_id=user_id,
         )
+        _bind_trace(client, state)
 
         proposal_prompt = (
             "You are a warm and supportive care coordinator assistant. "
@@ -468,6 +481,7 @@ async def turn_router(state: Dict[str, Any]) -> Dict[str, Any]:
         agent_role="turn_router",
         user_id=user_id,
     )
+    _bind_trace(client, state)
 
     try:
         # Use LLM-based decision
@@ -561,6 +575,7 @@ async def front_end_node(state: Dict[str, Any]) -> Dict[str, Any]:
         agent_role="front_end_emotional_support",
         user_id=user_id,
     )
+    _bind_trace(client, state)
 
     content = await llm_emotional_support(
         user_message=user_text,
@@ -702,6 +717,7 @@ async def upstream_delegator(state: Dict[str, Any]) -> Dict[str, Any]:
         agent_role="upstream_delegator",
         user_id=user_id,
     )
+    _bind_trace(client, state)
 
     # Fetch historical similar requests for context (like info_collection does)
     user_text = last_user_text(state)
@@ -1175,6 +1191,7 @@ async def info_collection_node(state: Dict[str, Any]) -> Dict[str, Any]:
         agent_role="info_collection",
         user_id=user_id,
     )
+    _bind_trace(client, state)
 
     active_id = _get_active_request_id(state)
     gate = _get_prereq_gate(state)
@@ -1976,6 +1993,7 @@ _search_llm = TrackedAnthropicClient(agent_role="deep_search")
 async def deep_search_node(state: Dict[str, Any]) -> Dict[str, Any]:
     rid = _get_active_request_id(state)
     req = _get_active_request(state) or {}
+    _bind_trace(_search_llm, state)
 
     # ── Demo mode: unchanged original behavior ──────────────────────────
     if DEEP_SEARCH_MODE == "demo":
@@ -2222,6 +2240,7 @@ async def user_info_node(state: Dict[str, Any]) -> Dict[str, Any]:
         agent_role="user_info",
         user_id=user_id,
     )
+    _bind_trace(client, state)
 
     # ── Resolve entity from user text (not just from the active request) ──
     entity_id = ""
