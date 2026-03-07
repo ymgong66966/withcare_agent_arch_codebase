@@ -403,7 +403,8 @@ class TestRouteAfterCatcher:
 # ── Build escalation messages test ───────────────────────────────────
 
 class TestBuildEscalationMessages:
-    def test_message_format(self):
+    @pytest.mark.asyncio
+    async def test_message_format(self):
         """_build_escalation_messages should return properly formatted messages."""
         from graph import _build_escalation_messages
 
@@ -414,20 +415,21 @@ class TestBuildEscalationMessages:
                 {"role": "user", "content": "Thanks"},
             ],
         ))
-        result = _build_escalation_messages(state_dict, limit=20)
+        result = await _build_escalation_messages(state_dict, limit=20)
         assert len(result) == 3
         assert result[0]["role"] == "user"
         assert result[0]["text"] == "Help me find care"
         assert "message_Id" in result[0]
         assert "dateSent" in result[0]
 
-    def test_limit_respected(self):
+    @pytest.mark.asyncio
+    async def test_limit_respected(self):
         """Should respect the limit parameter."""
         from graph import _build_escalation_messages
 
         msgs = [{"role": "user", "content": f"msg {i}"} for i in range(30)]
         state_dict = _state_to_dict(_make_state(messages=msgs))
-        result = _build_escalation_messages(state_dict, limit=5)
+        result = await _build_escalation_messages(state_dict, limit=5)
         assert len(result) == 5
 
 

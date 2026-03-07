@@ -216,11 +216,43 @@ async def _handle_escalated_turn(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _build_escalation_messages(state: Dict[str, Any], limit: int = 20) -> List[Dict[str, Any]]:
-    """Build a list of recent messages formatted for the escalation lambda."""
-    messages = state.get("messages") or []
+async def _build_escalation_messages(state: Dict[str, Any], limit: int = 10) -> List[Dict[str, Any]]:
+    """Build a list of recent messages formatted for the escalation lambda.
+
+    Reads from DynamoDB (UserConversationTable) first so that messages survive
+    pod restarts. Falls back to the in-memory state["messages"] if DDB is
+    unavailable.
+    """
+    from conversation_store import get_conversation_store
+
+    meta = state.get("meta") or {}
+    conversation_id = meta.get("conversation_id", "")
+    raw_messages = None
+
+    # Try DDB first — authoritative source that survives pod restarts
+    if conversation_id:
+        try:
+            store = get_conversation_store()
+            all_msgs = await store.get_messages_for_conversation(conversation_id)
+            if all_msgs:
+                raw_messages = [
+                    {
+                        "role": m.get("role", "user"),
+                        "content": m.get("content", ""),
+                        "message_id": m.get("message_id"),
+                        "ts": m.get("timestamp", ""),
+                    }
+                    for m in all_msgs
+                ]
+        except Exception as e:
+            _logger.warning(f"DDB conversation read failed, falling back to in-memory: {e}")
+
+    # Fallback to in-memory
+    if not raw_messages:
+        raw_messages = state.get("messages") or []
+
     result = []
-    for msg in messages[-limit:]:
+    for msg in raw_messages[-limit:]:
         result.append({
             "role": msg.get("role", "user"),
             "text": msg.get("content", ""),
@@ -296,7 +328,7 @@ async def human_comm_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     if answer is True:
         # User confirmed — activate escalation and deliver message history
-        escalation_messages = _build_escalation_messages(state)
+        escalation_messages = await _build_escalation_messages(state)
 
         try:
             await call_mcp_tool_patch(
@@ -511,6 +543,8 @@ def route_from_turn_router(state: Dict[str, Any]) -> RouteKey:
         return "front_end"
     if cur == "quick_answer":
         return "quick_answer"
+    if cur == "human_comm":
+        return "human_comm"
 
     return "upstream_delegator"
 
