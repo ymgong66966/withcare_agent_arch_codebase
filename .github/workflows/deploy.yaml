@@ -173,8 +173,7 @@ jobs:
 
     - name: Verify deployment
       run: |
-        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=withcare-agent \
-          -n withcare-agent-dev --timeout=300s
+        kubectl rollout status deployment/withcare-agent-dev -n withcare-agent-dev --timeout=300s
         kubectl get pods -n withcare-agent-dev
 
   deploy-prod:
@@ -265,8 +264,7 @@ jobs:
 
     - name: Verify deployment
       run: |
-        kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=withcare-agent \
-          -n withcare-agent --timeout=300s
+        kubectl rollout status deployment/withcare-agent-prod -n withcare-agent --timeout=300s
         kubectl get pods -n withcare-agent
 
   security-scan:
