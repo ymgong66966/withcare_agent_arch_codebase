@@ -779,6 +779,7 @@ def make_turn_mode_prompt(
         "domain_expert": "Generates long-form deliverables: detailed guidance documents, email drafts, formal letters, checklists, step-by-step plans. Use when the user needs a WRITTEN ARTIFACT produced — not just a quick answer.",
         "front_end_emotional_support": "Provides emotional support and empathy. Handles distressed users expressing anxiety, burnout, overwhelm, or needing to vent.",
         "quick_answer": "Answers quick factual questions, definitions, policy lookups, and clarifications. Use for 'what is X?', 'how does Y work?', eligibility questions, or any standalone question that needs a direct answer without creating a task. Can optionally search the web but often answers from knowledge alone.",
+        "human_comm": "Proposes and manages handoff to a human clinical team. Used when automated assistance has been insufficient after multiple attempts, or when the user explicitly requests human help.",
     }
 
     # Format recent conversation
@@ -857,6 +858,13 @@ During info collection (status = "collecting"):
 - Assistant (info_collection) finishes gathering info, conversation naturally moves to deep_search to execute the task → CONTINUATION (natural progression, but agent changes to deep_search)
 - Assistant (domain_expert) provides Medicaid checklist, user asks follow-up "what documents do I need for step 3?" → CONTINUATION (related follow-up)
 - Assistant (deep_search) returned results, user asks "What's the contact info for the first result?" → CONTINUATION (follow-up about results)
+
+## Escalation Detection
+If the current agent is deep_search and ANY of these apply, set recommended_agent to "human_comm":
+- The user expresses frustration, dissatisfaction, or says the results are wrong/unhelpful
+- The user explicitly asks to talk to a person, human, or clinical team
+- The user says they want to give up on the current search approach
+Do NOT recommend human_comm for minor clarifications or simple follow-up questions.
 
 ## Output Format (JSON):
 {{

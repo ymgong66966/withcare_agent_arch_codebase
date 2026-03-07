@@ -245,6 +245,13 @@ class ResetRequest(BaseModel):
     conversation_id: str
 
 
+class ExternalSendRequest(BaseModel):
+    user_id: str
+    messages: list  # [{role, text}]
+    needs_human: bool = False
+    conversation_id: Optional[str] = None
+
+
 # ── Endpoints ─────────────────────────────────────────────────────────
 
 @app.post("/chat")
@@ -339,6 +346,80 @@ async def chat(req: ChatRequest):
             "memory_context": debug.get("memory_context"),
             "logs": log_capture.records,
         },
+    }
+
+
+@app.post("/external/send")
+async def external_send(req: ExternalSendRequest):
+    """External endpoint for lambda integration.
+
+    Returns {content, agent_type, needs_human} so the lambda can
+    trigger Slack when agent_type == "human_support".
+    """
+    import traceback
+
+    conv_id = req.conversation_id or str(uuid.uuid4())
+
+    # Extract the last user message text
+    user_text = ""
+    for msg in reversed(req.messages):
+        if msg.get("role") == "user" and msg.get("text"):
+            user_text = msg["text"]
+            break
+    if not user_text:
+        return {"content": "", "agent_type": "error", "needs_human": False, "error": "No user message found"}
+
+    if conv_id not in _conversations:
+        state = _init_state(conv_id, user_id=req.user_id)
+
+        # Restore previous messages from DynamoDB
+        try:
+            from state_models import ChatMessage
+            conv_store = get_conversation_store()
+            previous_msgs = await conv_store.get_messages_for_conversation(conv_id)
+            if previous_msgs:
+                restored = []
+                for msg in previous_msgs:
+                    role = msg.get("role", "user")
+                    content = msg.get("content", "")
+                    if role in ("user", "assistant") and content:
+                        restored.append(ChatMessage(role=role, content=content))
+                if restored:
+                    state.messages = restored
+        except Exception as e:
+            _chat_logger.warning(f"Failed to restore messages for external/send: {e}")
+
+        _conversations[conv_id] = state
+
+    state = _conversations[conv_id]
+
+    # If caller indicates needs_human, set it on state before running
+    if req.needs_human:
+        state.routing.needs_human = True
+
+    graph = _get_graph()
+
+    try:
+        state, debug = await _run_turn(graph, state, user_text)
+    except Exception as exc:
+        tb = traceback.format_exc()
+        _chat_logger.error(f"[external/send] ERROR: {exc}\n{tb}")
+        return {"content": f"[Server error] {exc}", "agent_type": "error", "needs_human": False}
+
+    _conversations[conv_id] = state
+
+    reply = _last_assistant_message(state)
+    needs_human = getattr(state.routing, "needs_human", False)
+    current_agent = state.routing.current_agent or ""
+
+    # When needs_human is True, report agent_type as "human_support" so lambda triggers Slack
+    agent_type = "human_support" if needs_human else current_agent
+
+    return {
+        "content": reply,
+        "agent_type": agent_type,
+        "needs_human": needs_human,
+        "conversation_id": conv_id,
     }
 
 

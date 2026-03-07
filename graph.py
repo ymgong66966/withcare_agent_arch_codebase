@@ -54,6 +54,7 @@ RouteKey = Literal[
     "user_info",
     "domain_expert",
     "quick_answer",
+    "human_comm",
     "respond",
     "escalate",
 ]
@@ -98,6 +99,287 @@ def _get_prereq_gate(state: Dict[str, Any]) -> Dict[str, Any]:
     req = _get_active_request(state) or {}
     return (req.get("prereq_gate") or {})
 
+def _detect_deep_search_streak(state: Dict[str, Any]) -> Optional[str]:
+    """Count consecutive deep_search assistant messages walking backwards.
+    Returns a trigger string if >= 3 consecutive rounds, else None.
+    """
+    messages = state.get("messages") or []
+    streak = 0
+    for msg in reversed(messages):
+        role = msg.get("role")
+        if role == "user":
+            continue
+        if role == "assistant":
+            agent = msg.get("agent") or (msg.get("metadata") or {}).get("agent")
+            if agent == "deep_search":
+                streak += 1
+            else:
+                break
+    cur = _get_current_agent(state)
+    if streak >= 3 and cur == "deep_search":
+        return "deep_search_3_consecutive_rounds"
+    return None
+
+
+async def _human_comm_llm_reply(
+    state: Dict[str, Any],
+    *,
+    instruction: str,
+    fallback_zh: str,
+    fallback_en: str,
+) -> str:
+    """Generate a human_comm reply via LLM, with a rigid fallback only if the call fails."""
+    meta = state.get("meta") or {}
+    messages = state.get("messages") or []
+    conversation_context = "\n".join(
+        f"[{m.get('role', 'unknown').upper()}]: {m.get('content', '')[:200]}"
+        for m in messages[-10:]
+    )
+    lang_hint = "Respond in Chinese." if _detect_user_language(state) == "zh" else "Respond in English."
+
+    client = TrackedAnthropicClient(
+        session_id=meta.get("conversation_id", ""),
+        agent_role="human_comm",
+        user_id=meta.get("user_id", ""),
+    )
+    try:
+        resp = await client.create_message(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300,
+            system=(
+                "You are a warm and supportive care coordinator assistant. "
+                "Be natural and conversational. Do NOT use bullet points or lists. "
+                f"{lang_hint} {instruction}"
+            ),
+            messages=[{
+                "role": "user",
+                "content": f"Recent conversation:\n{conversation_context}",
+            }],
+        )
+        return resp.content[0].text
+    except Exception as e:
+        _logger.warning(f"human_comm LLM call failed, using fallback: {e}")
+        return _msg(state, fallback_zh, fallback_en)
+
+
+async def _handle_escalated_turn(state: Dict[str, Any]) -> Dict[str, Any]:
+    """When needs_human=True, forward the user message to the lambda and return ack."""
+    meta = state.get("meta") or {}
+    user_id = meta.get("user_id", "")
+    conversation_id = meta.get("conversation_id", "")
+    user_text = last_user_text(state)
+    message_id = new_uuid("msg")
+
+    escalation_messages = [{
+        "role": "user",
+        "text": user_text,
+        "message_Id": message_id,
+        "dateSent": datetime.utcnow().isoformat(),
+    }]
+
+    try:
+        await call_mcp_tool_patch(
+            mgr=MCP_MGR,
+            server=ESCALATION_SERVER,
+            tool_name="human_escalation_deliver",
+            arguments={
+                "user_id": user_id,
+                "chat_id": conversation_id,
+                "messages": escalation_messages,
+            },
+            purpose="Forward user message to human support team",
+        )
+    except Exception as e:
+        _logger.warning(f"Escalation delivery failed (non-fatal): {e}")
+
+    ack = await _human_comm_llm_reply(
+        state,
+        instruction=(
+            "The user's message has just been forwarded to the clinical support team. "
+            "Generate a brief acknowledgement (1-2 sentences) letting the user know their "
+            "message was sent and the team will follow up. Be reassuring."
+        ),
+        fallback_zh="您的消息已转发给我们的临床团队，他们会尽快与您联系。",
+        fallback_en="Your message has been forwarded to our clinical team. They will reach out to you shortly.",
+    )
+
+    return {
+        "routing": {
+            "current_agent": "human_comm",
+            "needs_human": True,
+        },
+        "messages": [{
+            "role": "assistant",
+            "content": ack,
+            "metadata": {"agent": "human_comm"},
+        }],
+    }
+
+
+def _build_escalation_messages(state: Dict[str, Any], limit: int = 20) -> List[Dict[str, Any]]:
+    """Build a list of recent messages formatted for the escalation lambda."""
+    messages = state.get("messages") or []
+    result = []
+    for msg in messages[-limit:]:
+        result.append({
+            "role": msg.get("role", "user"),
+            "text": msg.get("content", ""),
+            "message_Id": msg.get("message_id") or new_uuid("msg"),
+            "dateSent": msg.get("ts", datetime.utcnow().isoformat()),
+        })
+    return result
+
+
+async def human_comm_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Human escalation agent node — proposal and confirmation modes."""
+    meta = state.get("meta") or {}
+    user_id = meta.get("user_id", "")
+    conversation_id = meta.get("conversation_id", "")
+    user_text = last_user_text(state)
+    messages = state.get("messages") or []
+
+    # Check if there's a prior human_comm assistant message (proposal already sent)
+    has_prior_proposal = any(
+        m.get("role") == "assistant"
+        and (m.get("agent") or (m.get("metadata") or {}).get("agent")) == "human_comm"
+        for m in messages
+    )
+
+    if not has_prior_proposal:
+        # ── Proposal mode: generate warm proposal via LLM ──
+        client = TrackedAnthropicClient(
+            session_id=conversation_id,
+            agent_role="human_comm",
+            user_id=user_id,
+        )
+
+        proposal_prompt = (
+            "You are a warm and supportive care coordinator assistant. "
+            "The automated search has not been able to fully address the user's needs "
+            "after multiple attempts. Generate a brief, empathetic message (2-3 sentences) "
+            "asking if the user would like a member of our clinical team to reach out to "
+            "them directly to help. Be natural and conversational. Do NOT use bullet points. "
+            "End with a clear yes/no question."
+        )
+
+        conversation_context = "\n".join(
+            f"[{m.get('role', 'unknown').upper()}]: {m.get('content', '')[:200]}"
+            for m in messages[-10:]
+        )
+
+        try:
+            resp = await client.create_message(
+                model="claude-sonnet-4-20250514",
+                max_tokens=300,
+                system=proposal_prompt,
+                messages=[{"role": "user", "content": f"Recent conversation:\n{conversation_context}\n\nGenerate the escalation proposal message."}],
+            )
+            proposal_text = resp.content[0].text
+        except Exception:
+            proposal_text = _msg(
+                state,
+                "看起来我们目前的搜索还没有完全满足您的需求。您希望我们的临床团队直接联系您来帮助吗？",
+                "It looks like our search hasn't fully addressed your needs yet. Would you like a member of our clinical team to reach out to you directly to help?",
+            )
+
+        return {
+            "routing": {"current_agent": "human_comm"},
+            "messages": [{
+                "role": "assistant",
+                "content": proposal_text,
+                "metadata": {"agent": "human_comm"},
+            }],
+        }
+
+    # ── Confirmation mode: user is responding to proposal ──
+    answer = _user_yes_no(user_text)
+
+    if answer is True:
+        # User confirmed — activate escalation and deliver message history
+        escalation_messages = _build_escalation_messages(state)
+
+        try:
+            await call_mcp_tool_patch(
+                mgr=MCP_MGR,
+                server=ESCALATION_SERVER,
+                tool_name="human_escalation_deliver",
+                arguments={
+                    "user_id": user_id,
+                    "chat_id": conversation_id,
+                    "messages": escalation_messages,
+                },
+                purpose="Deliver conversation to human support team after user confirmation",
+            )
+        except Exception as e:
+            _logger.warning(f"Escalation delivery failed (non-fatal): {e}")
+
+        confirm_text = await _human_comm_llm_reply(
+            state,
+            instruction=(
+                "The user just confirmed they want the clinical team to help. Their conversation "
+                "has been forwarded. Generate a warm confirmation (2-3 sentences) letting them know "
+                "the team will follow up, and that they can continue chatting in the meantime."
+            ),
+            fallback_zh="好的，我已经将您的对话转给了我们的临床团队。他们会尽快与您联系。在等待期间，如果有任何其他问题，请随时告诉我。",
+            fallback_en="I've forwarded your conversation to our clinical team. They will reach out to you shortly. In the meantime, feel free to let me know if there's anything else I can help with.",
+        )
+
+        return {
+            "routing": {
+                "current_agent": "human_comm",
+                "needs_human": True,
+            },
+            "messages": [{
+                "role": "assistant",
+                "content": confirm_text,
+                "metadata": {"agent": "human_comm"},
+            }],
+        }
+
+    if answer is False:
+        # User declined — return to deep_search
+        decline_text = await _human_comm_llm_reply(
+            state,
+            instruction=(
+                "The user was offered a handoff to the clinical team but declined. "
+                "Generate a brief, friendly acknowledgement (1-2 sentences) and offer to "
+                "continue helping with the search. Do not pressure them about the clinical team."
+            ),
+            fallback_zh="没问题！我们继续搜索。请告诉我您还想找什么，或者需要调整哪些条件。",
+            fallback_en="No problem! Let's continue searching. Let me know what else you'd like to look for, or if you'd like to adjust any criteria.",
+        )
+
+        return {
+            "routing": {"current_agent": "deep_search"},
+            "messages": [{
+                "role": "assistant",
+                "content": decline_text,
+                "metadata": {"agent": "human_comm"},
+            }],
+        }
+
+    # Ambiguous — re-ask
+    reask_text = await _human_comm_llm_reply(
+        state,
+        instruction=(
+            "The user's response to the clinical team handoff proposal was ambiguous — "
+            "it was not clearly yes or no. Generate a brief, gentle message (1-2 sentences) "
+            "asking them to clarify whether they would like the clinical team to reach out."
+        ),
+        fallback_zh="抱歉，我没有完全理解您的意思。您希望我们的临床团队联系您吗？",
+        fallback_en="Sorry, I didn't quite catch that. Would you like our clinical team to reach out to you?",
+    )
+
+    return {
+        "routing": {"current_agent": "human_comm"},
+        "messages": [{
+            "role": "assistant",
+            "content": reask_text,
+            "metadata": {"agent": "human_comm"},
+        }],
+    }
+
+
 def _mk_pending_handoff_patch(next_agent: Optional[str], reason: str = "") -> Dict[str, Any]:
     return {"routing": {"pending_handoff": {"recommended_next_agent": next_agent, "reason": reason}}}
 
@@ -126,6 +408,23 @@ async def turn_router(state: Dict[str, Any]) -> Dict[str, Any]:
     Uses LLM-based decision making via Claude to intelligently route based on conversation context.
     Falls back to heuristic-based routing if LLM call fails.
     """
+    routing = state.get("routing") or {}
+
+    # ── If already in human escalation mode, deliver message and respond ──
+    if routing.get("needs_human") is True:
+        return await _handle_escalated_turn(state)
+
+    # ── Condition 1: deep_search streak check (heuristic, before LLM call) ──
+    streak_trigger = _detect_deep_search_streak(state)
+    if streak_trigger:
+        return {
+            "routing": {
+                "turn_mode": "continuation",
+                "turn_reason": f"Escalation trigger: {streak_trigger}",
+                "llm_recommended_agent": "human_comm",
+            }
+        }
+
     # Extract metadata for client initialization
     meta = state.get("meta") or {}
     user_id = meta.get("user_id", "user-unknown")
@@ -193,6 +492,7 @@ def route_from_turn_router(state: Dict[str, Any]) -> RouteKey:
             "domain_expert": "domain_expert",
             "front_end_emotional_support": "front_end",
             "quick_answer": "quick_answer",
+            "human_comm": "human_comm",
         }
         if llm_recommended in agent_route_map:
             return agent_route_map[llm_recommended]
@@ -799,7 +1099,7 @@ def route_from_delegator(state: Dict[str, Any]) -> RouteKey:
     # - user_info: retrieves and summarizes stored facts/memory
     req = _get_active_request(state) or {}
     info_state = req.get("info_collection_state") or {}
-    if nxt and nxt not in ("front_end_emotional_support", "quick_answer", "user_info"):
+    if nxt and nxt not in ("front_end_emotional_support", "quick_answer", "user_info", "human_comm"):
         if not info_state.get("key_info_needed") and req.get("status") in (None, "created", "collecting"):
             return "info_collection"
 
@@ -815,6 +1115,8 @@ def route_from_delegator(state: Dict[str, Any]) -> RouteKey:
         return "user_info"
     if nxt == "domain_expert":
         return "domain_expert"
+    if nxt == "human_comm":
+        return "human_comm"
     return "respond"
 
 async def info_collection_node(state: Dict[str, Any]) -> Dict[str, Any]:
@@ -1607,6 +1909,15 @@ MEMORY_SERVER = MCPServerConfig(
     url=_MCP_URL if _MCP_URL else None,
     command="python" if not _MCP_URL else None,
     args=["-u", "servers/memory_mcp_server.py"] if not _MCP_URL else None,
+    keep_alive=True,
+)
+
+ESCALATION_SERVER = MCPServerConfig(
+    name="escalation",
+    transport="http" if _MCP_URL else "stdio",
+    url=_MCP_URL if _MCP_URL else None,
+    command="python" if not _MCP_URL else None,
+    args=["-u", "servers/escalation_mcp_server.py"] if not _MCP_URL else None,
     keep_alive=True,
 )
 
@@ -2786,6 +3097,8 @@ def route_after_catcher(state: Dict[str, Any]) -> RouteKey:
         return "domain_expert"
     if nxt == "quick_answer":
         return "quick_answer"
+    if nxt == "human_comm":
+        return "human_comm"
     return "respond"
 
 def build_graph():
@@ -2799,6 +3112,7 @@ def build_graph():
     g.add_node("user_info", user_info_node)
     g.add_node("domain_expert", domain_expert_node)
     g.add_node("quick_answer", quick_answer_node)
+    g.add_node("human_comm", human_comm_node)
     g.add_node("downstream_catcher", downstream_catcher)
 
     g.set_entry_point("turn_router")
@@ -2814,6 +3128,7 @@ def build_graph():
             "user_info": "user_info",
             "domain_expert": "domain_expert",
             "quick_answer": "quick_answer",
+            "human_comm": "human_comm",
             "respond": END,
             "escalate": END,
         },
@@ -2829,12 +3144,13 @@ def build_graph():
             "user_info": "user_info",
             "domain_expert": "domain_expert",
             "quick_answer": "quick_answer",
+            "human_comm": "human_comm",
             "respond": END,
             "escalate": END,
         },
     )
 
-    for n in ["front_end", "info_collection", "deep_search", "user_info", "domain_expert", "quick_answer"]:
+    for n in ["front_end", "info_collection", "deep_search", "user_info", "domain_expert", "quick_answer", "human_comm"]:
         g.add_edge(n, "downstream_catcher")
 
     g.add_conditional_edges(
@@ -2847,6 +3163,7 @@ def build_graph():
             "user_info": "user_info",
             "domain_expert": "domain_expert",
             "quick_answer": "quick_answer",
+            "human_comm": "human_comm",
             "respond": END,
             "escalate": END,
         },

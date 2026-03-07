@@ -126,6 +126,9 @@ def apply_node_output(state: UnifiedState, node_output: Union[Dict[str, Any], Ba
 
     if "routing" in out:
         r = out.pop("routing") or {}
+        # Sticky needs_human: once True, never revert within LangGraph
+        if r.get("needs_human") is False and getattr(state.routing, "needs_human", False):
+            r.pop("needs_human", None)
         for k, v in r.items():
             if k == "pending_handoff" and isinstance(v, dict):
                 v = Handoff.model_validate(v)

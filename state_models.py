@@ -12,6 +12,7 @@ AgentName = Literal[
     "user_info",
     "domain_expert",
     "quick_answer",
+    "human_comm",
 ]
 DelegatorName = Literal["delegator_upstream", "delegator_downstream"]
 AnyNodeName = Union[AgentName, DelegatorName]
@@ -227,6 +228,7 @@ class Routing(BaseModel):
     llm_recommended_agent: Optional[str] = None
     delegator_debug: Optional[Dict[str, Any]] = None
     pending_handoff: Handoff = Field(default_factory=Handoff)
+    needs_human: bool = False
 
 class ToolState(BaseModel):
     tool_runs: List[ToolRun] = Field(default_factory=list)
