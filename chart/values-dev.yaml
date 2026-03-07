@@ -54,6 +54,22 @@ healthcheck:
     timeoutSeconds: 3
     failureThreshold: 6
 
+cronJob:
+  enabled: false  # disabled in dev (ddbOff=1, no data to process)
+  schedule: "0 0 * * *"
+  timeZone: "America/Los_Angeles"
+  activeDeadlineSeconds: 1800
+  backoffLimit: 2
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+
 securityContext:
   enabled: true
 

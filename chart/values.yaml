@@ -53,6 +53,22 @@ healthcheck:
     timeoutSeconds: 3
     failureThreshold: 6
 
+cronJob:
+  enabled: true
+  schedule: "0 0 * * *"  # midnight daily
+  timeZone: "America/Los_Angeles"
+  activeDeadlineSeconds: 1800  # 30 min max runtime
+  backoffLimit: 2
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  resources:
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+    requests:
+      cpu: "200m"
+      memory: "256Mi"
+
 securityContext:
   enabled: true
 
