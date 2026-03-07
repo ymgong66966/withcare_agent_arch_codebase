@@ -148,6 +148,13 @@ def build_request_update_patch(
         expr_names["#pstatus"] = "status"
         expr_values[":pstatus_val"] = updates["status"]
 
+    # Sync info_collection_state into payload when it changes
+    if "info_collection_state" in updates:
+        set_parts.append("#payload.#pics = :pics_val")
+        expr_names.setdefault("#payload", "payload")
+        expr_names["#pics"] = "info_collection_state"
+        expr_values[":pics_val"] = _sanitize_update_value(updates["info_collection_state"])
+
     # Always update gsi1sk so GSI1 sort reflects latest touch
     set_parts.append("#gsi1sk = :gsi1sk_val")
     expr_names["#gsi1sk"] = "gsi1sk"

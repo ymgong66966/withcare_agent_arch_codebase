@@ -1569,10 +1569,11 @@ async def info_collection_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "fact_pre_filter": None,
             },
         }
-        # Sync collecting status to DDB (PUT wrote status=created, now it's collecting)
+        # Sync collecting status and info_collection_state to DDB
         _append_request_ddb_sync(new_req_patch, state, rid, {
             "status": "collecting",
             "stage_detail": "info_collection_started",
+            "info_collection_state": info_collection_state,
         })
         return new_req_patch
 
@@ -1879,14 +1880,19 @@ async def info_collection_node(state: Dict[str, Any]) -> Dict[str, Any]:
         }
         patch["request_manager"]["requests"][active_id]["stage_history"] = existing_history + [new_transition]
 
-        # Sync validated status to DDB
+        # Sync validated status and final info_collection_state to DDB
         _append_request_ddb_sync(patch, state, active_id, {
             "status": "validated",
             "stage_detail": f"info_collection_complete_routing_to_{routing_hint}",
+            "info_collection_state": updated_info_state,
         })
     else:
         # Still collecting
         patch["request_manager"]["requests"][active_id]["awaiting_user_input"] = True
+        # Sync updated info_collection_state to DDB mid-Q&A
+        _append_request_ddb_sync(patch, state, active_id, {
+            "info_collection_state": updated_info_state,
+        })
 
     return patch
 

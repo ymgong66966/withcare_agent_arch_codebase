@@ -206,6 +206,37 @@ class RequestStore:
             logger.error(f"query_recent failed: {e}")
             return []
 
+    async def get_requests_by_ids(
+        self,
+        user_id: str,
+        request_ids: List[str],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Fetch multiple requests by ID and return a dict keyed by request_id.
+
+        Returns raw DDB items including the ``payload`` field so callers can
+        reconstruct full RequestRecord objects.
+        """
+        if not self.dynamodb or not request_ids:
+            return {}
+
+        result: Dict[str, Dict[str, Any]] = {}
+        try:
+            table = self._table()
+            for rid in request_ids:
+                response = table.get_item(
+                    Key={
+                        "pk": f"USER#{user_id}",
+                        "sk": f"REQ#{rid}",
+                    }
+                )
+                item = response.get("Item")
+                if item:
+                    result[rid] = item
+        except Exception as e:
+            logger.error(f"get_requests_by_ids failed: {e}")
+
+        return result
+
 
 # ─────────────────────────────────────────────────────────────
 # Module-level singleton

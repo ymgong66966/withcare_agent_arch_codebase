@@ -44,7 +44,7 @@ class _LogCapture(logging.Handler):
         except Exception:
             pass
 
-from state_models import UnifiedState, Meta
+from state_models import UnifiedState, Meta, ChatMessage, PendingQueueItem, RequestRecord
 from merge_utils import apply_node_output
 from graph import build_graph, check_prereq_lifecycle
 from ddb_client import get_ddb_resource, USER_REQUEST_TABLE
@@ -148,6 +148,120 @@ def _last_assistant_message(state: UnifiedState) -> str:
     return ""
 
 
+def _build_checkpoint_data(state: UnifiedState) -> Dict[str, Any]:
+    """Extract the minimal checkpoint fields from state."""
+    rm = state.request_manager
+    return {
+        "current_agent": state.routing.current_agent,
+        "conversation_stage": state.routing.conversation_stage,
+        "needs_human": state.routing.needs_human,
+        "turn_mode": state.routing.turn_mode,
+        "active_request_id": rm.active_request_id,
+        "request_ids": list(rm.requests.keys()),
+        "pending_queue": [item.model_dump() for item in rm.pending_queue],
+    }
+
+
+def _apply_checkpoint(state: UnifiedState, checkpoint: Dict[str, Any]) -> None:
+    """Apply checkpoint data to routing and request_manager metadata."""
+    if checkpoint.get("current_agent"):
+        state.routing.current_agent = checkpoint["current_agent"]
+    if checkpoint.get("conversation_stage"):
+        state.routing.conversation_stage = checkpoint["conversation_stage"]
+    if checkpoint.get("needs_human"):
+        state.routing.needs_human = True  # sticky: only set to True
+    if checkpoint.get("turn_mode"):
+        state.routing.turn_mode = checkpoint["turn_mode"]
+
+    if checkpoint.get("active_request_id"):
+        state.request_manager.active_request_id = checkpoint["active_request_id"]
+
+    for item_dict in checkpoint.get("pending_queue", []):
+        try:
+            state.request_manager.pending_queue.append(
+                PendingQueueItem.model_validate(item_dict)
+            )
+        except Exception:
+            pass
+
+
+def _rebuild_request_manager(
+    state: UnifiedState,
+    raw_items: Dict[str, Dict[str, Any]],
+    checkpoint: Dict[str, Any],
+) -> None:
+    """Rebuild state.request_manager.requests from DDB items."""
+    for rid, item in raw_items.items():
+        payload = item.get("payload", {})
+        if not payload:
+            payload = {
+                "request_id": rid,
+                "name": item.get("name", ""),
+                "goal": item.get("goal", ""),
+                "status": item.get("status", "created"),
+                "target": item.get("target", "unknown"),
+                "priority": item.get("priority", "normal"),
+                "request_type": item.get("request_type", ""),
+                "subject_entity_id": item.get("subject_entity_id", ""),
+            }
+
+        payload["request_id"] = rid
+
+        try:
+            record = RequestRecord.model_validate(payload)
+            state.request_manager.requests[rid] = record
+        except Exception as e:
+            _chat_logger.warning(f"Failed to rebuild request {rid}: {e}")
+
+    active_id = checkpoint.get("active_request_id")
+    if active_id and active_id in state.request_manager.requests:
+        state.request_manager.active_request_id = active_id
+
+
+async def _restore_state(state: UnifiedState, conv_id: str) -> None:
+    """Restore full state from DDB: messages, checkpoint, and requests."""
+    conv_store = get_conversation_store()
+
+    # 1. Restore messages
+    previous_msgs = await conv_store.get_messages_for_conversation(conv_id)
+    if previous_msgs:
+        restored = []
+        for msg in previous_msgs:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role in ("user", "assistant") and content:
+                restored.append(ChatMessage(role=role, content=content))
+        if restored:
+            state.messages = restored
+            _chat_logger.info(
+                f"Restored {len(restored)} messages from DDB for conv {conv_id[:8]}"
+            )
+
+    # 2. Restore checkpoint (routing + request manager metadata)
+    checkpoint = await conv_store.get_checkpoint(conv_id)
+    if checkpoint:
+        _apply_checkpoint(state, checkpoint)
+        _chat_logger.info(
+            f"Restored checkpoint for conv {conv_id[:8]}: "
+            f"agent={checkpoint.get('current_agent')}, "
+            f"active_req={checkpoint.get('active_request_id')}"
+        )
+
+        # 3. Reload request records from UserRequestTable
+        request_ids = checkpoint.get("request_ids", [])
+        if request_ids and state.meta.user_id:
+            from request_store import get_request_store
+            req_store = get_request_store()
+            raw_items = await req_store.get_requests_by_ids(
+                user_id=state.meta.user_id,
+                request_ids=request_ids,
+            )
+            _rebuild_request_manager(state, raw_items, checkpoint)
+            _chat_logger.info(
+                f"Restored {len(raw_items)} requests from DDB"
+            )
+
+
 async def _run_turn(graph, state: UnifiedState, user_message: str):
     """Run one conversation turn.  Returns (state, debug_info)."""
     debug: Dict[str, Any] = {"nodes": [], "node_outputs": {}}
@@ -230,6 +344,17 @@ async def _run_turn(graph, state: UnifiedState, user_message: str):
     except Exception as e:
         _chat_logger.warning(f"Failed to persist assistant message: {e}")
 
+    # Persist checkpoint (fire-and-forget)
+    try:
+        conv_store = get_conversation_store()
+        await conv_store.write_checkpoint(
+            conversation_id=state.meta.conversation_id,
+            user_id=state.meta.user_id,
+            checkpoint_data=_build_checkpoint_data(state),
+        )
+    except Exception as e:
+        _chat_logger.warning(f"Failed to persist checkpoint: {e}")
+
     return state, debug
 
 
@@ -263,24 +388,11 @@ async def chat(req: ChatRequest):
     if conv_id not in _conversations:
         state = _init_state(conv_id, user_id=req.user_id or "")
 
-        # Restore previous messages from DynamoDB (survives pod restarts)
+        # Restore full state from DDB (messages + checkpoint + requests)
         try:
-            conv_store = get_conversation_store()
-            previous_msgs = await conv_store.get_messages_for_conversation(conv_id)
-            if previous_msgs:
-                restored = []
-                for msg in previous_msgs:
-                    role = msg.get("role", "user")
-                    content = msg.get("content", "")
-                    if role in ("user", "assistant") and content:
-                        restored.append(ChatMessage(role=role, content=content))
-                if restored:
-                    state.messages = restored
-                    _chat_logger.info(
-                        f"Restored {len(restored)} messages from DDB for conv {conv_id[:8]}"
-                    )
+            await _restore_state(state, conv_id)
         except Exception as e:
-            _chat_logger.warning(f"Failed to restore messages from DDB: {e}")
+            _chat_logger.warning(f"Failed to restore state from DDB: {e}")
 
         _conversations[conv_id] = state
 
@@ -372,22 +484,11 @@ async def external_send(req: ExternalSendRequest):
     if conv_id not in _conversations:
         state = _init_state(conv_id, user_id=req.user_id)
 
-        # Restore previous messages from DynamoDB
+        # Restore full state from DDB (messages + checkpoint + requests)
         try:
-            from state_models import ChatMessage
-            conv_store = get_conversation_store()
-            previous_msgs = await conv_store.get_messages_for_conversation(conv_id)
-            if previous_msgs:
-                restored = []
-                for msg in previous_msgs:
-                    role = msg.get("role", "user")
-                    content = msg.get("content", "")
-                    if role in ("user", "assistant") and content:
-                        restored.append(ChatMessage(role=role, content=content))
-                if restored:
-                    state.messages = restored
+            await _restore_state(state, conv_id)
         except Exception as e:
-            _chat_logger.warning(f"Failed to restore messages for external/send: {e}")
+            _chat_logger.warning(f"Failed to restore state for external/send: {e}")
 
         _conversations[conv_id] = state
 

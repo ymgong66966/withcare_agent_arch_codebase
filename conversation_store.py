@@ -141,6 +141,66 @@ class ConversationStore:
             logger.error(f"Failed to get messages for conversation: {e}")
             return []
 
+    async def write_checkpoint(
+        self,
+        conversation_id: str,
+        user_id: str,
+        checkpoint_data: Dict[str, Any],
+    ) -> None:
+        """Write or overwrite the checkpoint row for a conversation.
+
+        Uses the same table and PK partition as messages. SK is
+        CHECKPOINT#latest so it never collides with MSG# rows and is
+        excluded by get_messages_for_conversation (which filters
+        SK begins_with "MSG#").
+        """
+        if not self.dynamodb:
+            return
+
+        try:
+            now = datetime.utcnow().isoformat()
+            item = _serialize_item({
+                "pk": f"CONV#{conversation_id}",
+                "sk": "CHECKPOINT#latest",
+                "entity": "checkpoint",
+                "conversation_id": conversation_id,
+                "user_id": user_id,
+                "updated_at": now,
+                **checkpoint_data,
+            })
+            table = self._table()
+            table.put_item(Item=item)
+            logger.debug(f"Wrote checkpoint for conv {conversation_id[:8]}")
+        except Exception as e:
+            logger.warning(f"Failed to write checkpoint (non-fatal): {e}")
+
+    async def get_checkpoint(
+        self,
+        conversation_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Read the checkpoint row for a conversation. Returns None if not found."""
+        if not self.dynamodb:
+            return None
+
+        try:
+            table = self._table()
+            response = table.get_item(
+                Key={
+                    "pk": f"CONV#{conversation_id}",
+                    "sk": "CHECKPOINT#latest",
+                }
+            )
+            item = response.get("Item")
+            if not item:
+                return None
+            return {
+                k: v for k, v in item.items()
+                if k not in ("pk", "sk", "entity", "gsi1pk", "gsi1sk")
+            }
+        except Exception as e:
+            logger.error(f"Failed to get checkpoint: {e}")
+            return None
+
     async def get_messages_for_user_date(
         self,
         user_id: str,
