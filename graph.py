@@ -1169,11 +1169,6 @@ async def info_collection_node(state: Dict[str, Any]) -> Dict[str, Any]:
     user_text = last_user_text(state)
     known_facts = _extract_known_facts(state)
 
-    # Enrich known_facts with memory context from Fact Store
-    memory_block, profile_facts_dict = await _build_memory_context_with_facts(state)
-    if memory_block:
-        known_facts["_memory_context"] = memory_block
-
     # Initialize TrackedAnthropicClient
     client = TrackedAnthropicClient(
         session_id=conversation_id,
@@ -1184,35 +1179,48 @@ async def info_collection_node(state: Dict[str, Any]) -> Dict[str, Any]:
     active_id = _get_active_request_id(state)
     gate = _get_prereq_gate(state)
 
-    # ── Pending fact confirmations check (via MCP) ──
-    # If there are high-risk facts pending confirmation, check if user responded
-    try:
-        req_for_confirm = _get_active_request(state) or {}
-        entity_for_confirm = req_for_confirm.get("subject_entity_id") or ""
-        if user_id and entity_for_confirm:
-            pending = await call_memory_tool(
-                mgr=MCP_MGR, server=MEMORY_SERVER,
-                tool_name="memory_get_pending_confirmations",
-                arguments={"user_id": user_id, "entity_id": entity_for_confirm},
-                timeout_ms=3000,
-            )
-            if isinstance(pending, list) and pending:
-                # Check if user's message confirms or denies a pending fact
-                yn = _user_yes_no(user_text)
-                if yn is not None and len(pending) > 0:
-                    top_pending = pending[0]
-                    await call_memory_tool(
-                        mgr=MCP_MGR, server=MEMORY_SERVER,
-                        tool_name="memory_confirm_fact",
-                        arguments={
-                            "user_id": user_id,
-                            "event_id": top_pending.get("event_id", ""),
-                            "confirmed": yn,
-                        },
-                        timeout_ms=3000,
-                    )
-    except Exception as e:
-        _logger.debug(f"Pending confirmations check failed (non-fatal): {e}")
+    # Determine whether this is a new request (needs plan) or a continuation.
+    # Memory MCP tools are only called for new requests to avoid redundant
+    # latency on every Q&A turn — the facts are already in info_collection_state.
+    _pre_req = _get_active_request(state) or {}
+    _pre_ic = _pre_req.get("info_collection_state") or {}
+    _is_new_request = not active_id or not _pre_ic.get("key_info_needed")
+
+    memory_block = ""
+    profile_facts_dict = {}
+
+    if _is_new_request:
+        # Enrich known_facts with memory context from Fact Store (new requests only)
+        memory_block, profile_facts_dict = await _build_memory_context_with_facts(state)
+        if memory_block:
+            known_facts["_memory_context"] = memory_block
+
+        # ── Pending fact confirmations check (via MCP, new requests only) ──
+        try:
+            entity_for_confirm = _pre_req.get("subject_entity_id") or ""
+            if user_id and entity_for_confirm:
+                pending = await call_memory_tool(
+                    mgr=MCP_MGR, server=MEMORY_SERVER,
+                    tool_name="memory_get_pending_confirmations",
+                    arguments={"user_id": user_id, "entity_id": entity_for_confirm},
+                    timeout_ms=3000,
+                )
+                if isinstance(pending, list) and pending:
+                    yn = _user_yes_no(user_text)
+                    if yn is not None and len(pending) > 0:
+                        top_pending = pending[0]
+                        await call_memory_tool(
+                            mgr=MCP_MGR, server=MEMORY_SERVER,
+                            tool_name="memory_confirm_fact",
+                            arguments={
+                                "user_id": user_id,
+                                "event_id": top_pending.get("event_id", ""),
+                                "confirmed": yn,
+                            },
+                            timeout_ms=3000,
+                        )
+        except Exception as e:
+            _logger.debug(f"Pending confirmations check failed (non-fatal): {e}")
 
     # CASE 0: Prerequisite proposal pending (consent-gated)
     # This is when the system (not user) detected a prerequisite and needs consent
