@@ -102,17 +102,26 @@ class TrackedAnthropicClient(AnthropicClient):
         metadata: Dict[str, Any],
         trace: Any = None,
     ):
-        """Create a Langfuse generation, optionally as child of a trace/span."""
+        """Create a Langfuse generation, optionally as child of a trace/span.
+
+        If no parent trace is provided, creates an ephemeral trace first
+        (required by Langfuse SDK — generations must live under a trace).
+        """
         if not langfuse:
             return None
         try:
-            parent = trace or langfuse
+            parent = trace
+            if parent is None:
+                # No per-turn trace available — create a standalone trace
+                parent = langfuse.trace(
+                    name=f"standalone-{name}",
+                    session_id=self.session_id,
+                    user_id=self.user_id,
+                )
             return parent.generation(
                 name=name,
                 model=model,
                 input=input_data,
-                session_id=self.session_id,
-                user_id=self.user_id,
                 metadata=metadata,
             )
         except Exception as e:
