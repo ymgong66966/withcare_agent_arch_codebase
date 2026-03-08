@@ -558,6 +558,39 @@ async def external_send(req: ExternalSendRequest):
     }
 
 
+class OnboardingIngestRequest(BaseModel):
+    user_id: str
+    user_data: Optional[Dict] = None
+    care_recipients: Optional[list] = None  # [{relationship, data: {...}}]
+    assessment_score: Optional[int] = None
+    assessment_answers: Optional[list] = None  # [{question, answer}]
+    tasks: Optional[list] = None
+
+
+@app.post("/onboarding/ingest")
+async def onboarding_ingest(req: OnboardingIngestRequest):
+    """Segment onboarding data into structured fact keys.
+
+    Called after onboarding completes. Parses user/recipient fields,
+    mental assessment, and tasks into WithCare_UserFactTable.
+    """
+    from onboarding_fact_bridge import ingest_onboarding_data
+
+    try:
+        result = await ingest_onboarding_data(
+            user_id=req.user_id,
+            user_data=req.user_data,
+            care_recipients=req.care_recipients,
+            assessment_score=req.assessment_score,
+            assessment_answers=req.assessment_answers,
+            tasks=req.tasks,
+        )
+        return {"status": "ok", **result}
+    except Exception as e:
+        _chat_logger.error(f"Onboarding ingest failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 @app.post("/reset")
 async def reset(req: ResetRequest):
     _conversations.pop(req.conversation_id, None)

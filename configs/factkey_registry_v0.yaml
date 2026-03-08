@@ -94,6 +94,31 @@
   aliases: [citizen, 身份, immigration status, residency status]
   examples: ["US citizen", "permanent resident", "undocumented"]
 
+- key: identity.veteran_status
+  description: Whether the person is a military veteran
+  risk_level: medium
+  value_type: enum
+  cardinality: single
+  aliases: [veteran, military, vet, 退伍军人, service member]
+  examples: ["veteran", "not a veteran"]
+  canonicalization: lowercase
+
+- key: identity.pronouns
+  description: Preferred pronouns
+  risk_level: low
+  value_type: string
+  cardinality: single
+  aliases: [pronouns, 代词]
+  examples: ["he/him/his", "she/her/hers", "they/them/theirs"]
+
+- key: identity.dependent_status
+  description: Whether the person is a dependent
+  risk_level: low
+  value_type: string
+  cardinality: single
+  aliases: [dependent, dependent status, 受抚养人]
+  examples: ["Not a child/dependent", "Adult child", "Minor child"]
+
 # ─────────────────────────────────────────────────────────────
 # 2. contact.*
 # ─────────────────────────────────────────────────────────────
@@ -705,3 +730,92 @@
   cardinality: single
   aliases: [document location, 文件位置, where are the papers]
   examples: ["Safe deposit box at Chase bank", "Filing cabinet at home"]
+
+# ─────────────────────────────────────────────────────────────
+# 13. caregiver.* (caregiver-specific, entity=user:self)
+# ─────────────────────────────────────────────────────────────
+- key: caregiver.burnout_score
+  description: Caregiver burnout assessment score (0-12 scale from onboarding)
+  risk_level: medium
+  value_type: number
+  cardinality: single
+  aliases: [burnout score, stress score, assessment score, 倦怠评分]
+  examples: [3, 7, 11]
+
+- key: caregiver.burnout_level
+  description: Caregiver burnout severity level derived from assessment score
+  risk_level: medium
+  value_type: enum
+  cardinality: single
+  aliases: [burnout level, stress level, 倦怠等级]
+  examples: ["low", "moderate", "high"]
+
+- key: caregiver.burnout_assessment_detail
+  description: Individual Q&A responses from the caregiver burnout screening
+  risk_level: medium
+  value_type: object
+  cardinality: single
+  aliases: [burnout details, assessment details, mental health screening]
+  examples: [{"concentration": "sometimes", "sleep": "yes", "isolation": "no"}]
+
+# ─────────────────────────────────────────────────────────────
+# 14. onboarding.* (onboarding metadata)
+# ─────────────────────────────────────────────────────────────
+- key: onboarding.recommended_tasks
+  description: Tasks recommended during onboarding assessment
+  risk_level: low
+  value_type: list
+  cardinality: multi
+  aliases: [onboarding tasks, care plan tasks, recommended actions]
+  examples: [["Explore Medicare Benefits", "Find In-Home Support", "Find an Attorney"]]
+
+- key: onboarding.completed_at
+  description: Timestamp when onboarding was completed
+  risk_level: low
+  value_type: date
+  cardinality: single
+  aliases: [onboarding date, registration date]
+  examples: ["2026-03-07T00:00:00Z"]
+
+# ─────────────────────────────────────────────────────────────
+# 15. Additional medical/insurance keys for onboarding
+# ─────────────────────────────────────────────────────────────
+- key: insurance.medicaid_status
+  description: Medicaid eligibility or enrollment status
+  risk_level: high
+  value_type: enum
+  cardinality: single
+  aliases: [medicaid, medicaid eligibility, 医疗补助]
+  examples: ["eligible", "enrolled", "not_eligible", "unknown"]
+
+- key: dailycare.living_situation
+  description: Current living arrangement
+  risk_level: medium
+  value_type: string
+  cardinality: single
+  aliases: [living situation, housing, where they live, 居住情况]
+  examples: ["lives alone", "lives with family", "assisted living facility", "nursing home"]
+
+- key: medical.hospitalization_recent
+  description: Recent hospitalization information
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [hospitalization, hospital stay, 住院, recent admission]
+  examples: ["hospitalized 2 weeks ago for fall", "no recent hospitalizations"]
+
+- key: medical.er_visit_recent
+  description: Recent emergency room visits
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [ER visit, emergency room, 急诊, emergency visit]
+  examples: ["ER visit last month for chest pain", "no ER visits in past 3 months"]
+
+- key: medical.end_of_life_preferences
+  description: End-of-life care preferences and advance directives
+  risk_level: high
+  value_type: string
+  cardinality: single
+  aliases: [end of life, hospice, palliative, 临终关怀, advance directive]
+  examples: ["prefers comfort care only", "wants full code", "has DNR order"]
