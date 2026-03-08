@@ -1444,23 +1444,102 @@ async def info_collection_node(state: Dict[str, Any]) -> Dict[str, Any]:
             except Exception as e:
                 _logger.warning(f"Pre-plan entity resolution failed (non-blocking): {e}")
 
-        # Fetch similar requests for context
+        # Fetch similar requests for context (vector search — may return empty)
         similar = await fetch_similar_requests(user_id=user_id, request_text=user_text, top_k=5)
-
-        # Convert HistoricalRequestRecord objects to dicts for LLM
         similar_dicts = [s.model_dump() for s in similar] if similar else []
 
-        # LLM generates collection plan (now with correct entity facts in known_facts)
+        # Fetch recent requests from DDB for cross-session resume detection
+        recent_request_dicts = []
+        try:
+            from request_store import get_request_store
+            req_store = get_request_store()
+            recent_request_dicts = await req_store.query_recent(user_id=user_id, limit=10)
+        except Exception as e:
+            _logger.warning(f"Failed to fetch recent requests (non-fatal): {e}")
+
+        # LLM generates collection plan with request history for intelligent matching
         plan = await llm_collection_plan(
             user_request=user_text,
             known_facts=known_facts,
             similar_requests=similar_dicts,
+            recent_requests=recent_request_dicts,
             client=client,
         )
 
         # Override plan's entity_id if we already resolved it
         if resolved_entity_id:
             plan["subject_entity_id"] = resolved_entity_id
+
+        # ── Cross-session resume: LLM matched a previous request ──
+        resume_rid = plan.get("resume_from_request_id")
+        if resume_rid and resume_rid in {r.get("request_id") for r in recent_request_dicts}:
+            try:
+                from request_store import get_request_store
+                req_store = get_request_store()
+                matched = await req_store.get_request(user_id=user_id, request_id=resume_rid)
+                if matched:
+                    matched_payload = matched.get("payload") or {}
+                    matched_ic = matched_payload.get("info_collection_state") or {}
+                    collected_summary = matched_ic.get("summary_of_collected_info", "")
+
+                    # Build resume message acknowledging previous progress
+                    label = matched.get("name") or matched.get("title") or "your previous request"
+                    resume_msg = _msg(
+                        state,
+                        f"我找到了您之前的请求「{label}」。让我们从上次的进度继续。",
+                        f"I found your previous request \"{label}\". Let me pick up where we left off.",
+                    )
+                    if collected_summary:
+                        preview = collected_summary[:300]
+                        resume_msg += "\n\n" + _msg(
+                            state,
+                            f"上次已收集的信息：{preview}",
+                            f"Previously collected: {preview}",
+                        )
+
+                    # Build questions from the adapted plan
+                    key_info_needed = plan.get("key_info_needed", [])
+                    if key_info_needed:
+                        resume_msg += "\n\n" + "\n".join(f"• {q}" for q in key_info_needed[:5])
+
+                    # Carry over info_collection_state from matched request
+                    resumed_ic_state = {
+                        **matched_ic,
+                        "conversation_turns_with_agent": (matched_ic.get("conversation_turns_with_agent") or 0) + 1,
+                    }
+                    # Merge new key_info if the plan adapted them
+                    if key_info_needed:
+                        resumed_ic_state["key_info_needed"] = key_info_needed
+
+                    resume_patch: Dict[str, Any] = {
+                        "routing": {"current_agent": "info_collection", "conversation_stage": "collecting"},
+                        "request_manager": {
+                            "active_request_id": resume_rid,
+                            "requests": {
+                                resume_rid: {
+                                    "status": "collecting",
+                                    "stage_detail": "resumed_cross_session",
+                                    "awaiting_user_input": True,
+                                    "info_collection_state": resumed_ic_state,
+                                    "last_touched_at": datetime.utcnow(),
+                                }
+                            }
+                        },
+                        "messages": [{
+                            "role": "assistant",
+                            "content": resume_msg,
+                            "metadata": {"agent": "info_collection"},
+                        }],
+                    }
+                    _append_request_ddb_sync(resume_patch, state, resume_rid, {
+                        "status": "collecting",
+                        "stage_detail": "resumed_cross_session",
+                        "info_collection_state": resumed_ic_state,
+                    })
+                    _logger.info(f"Resuming cross-session request {resume_rid} for user {user_id}")
+                    return resume_patch
+            except Exception as e:
+                _logger.warning(f"Cross-session resume failed, creating new request: {e}")
 
         # Create request (or reuse if delegator already created one)
         if active_id:

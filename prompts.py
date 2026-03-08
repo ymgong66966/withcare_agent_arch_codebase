@@ -16,6 +16,7 @@ def make_collection_plan_prompt(
     user_request: str,
     known_facts: Dict[str, Any],
     similar_requests: List[Dict[str, Any]] | None = None,
+    recent_requests: List[Dict[str, Any]] | None = None,
 ) -> str:
     """
     Generate a prompt for Claude to create an information collection plan.
@@ -23,8 +24,7 @@ def make_collection_plan_prompt(
     """
     similar_context = ""
     if similar_requests:
-        similar_context = "\n\n## Similar Past Requests:\n\n"
-        similar_context += "The user has worked on similar requests before. Use these as context:\n\n"
+        similar_context = "\n\n## Similar Past Requests (from vector search):\n\n"
         for i, req in enumerate(similar_requests[:3], 1):
             completion = req.get('completion_status', 'unknown')
             similar_context += f"{i}. **{req.get('name', 'Unknown')}** ({completion})\n"
@@ -35,9 +35,37 @@ def make_collection_plan_prompt(
                 similar_context += f"   - User was: {req.get('user_satisfaction')}\n"
             similar_context += "\n"
 
+    recent_context = ""
+    if recent_requests:
+        recent_context = "\n\n## Recent Requests (last 10 from this user's history):\n\n"
+        for i, req in enumerate(recent_requests[:10], 1):
+            rid = req.get('request_id', '?')
+            name = req.get('name') or req.get('title') or 'Unknown'
+            goal = req.get('goal', '')[:200]
+            status = req.get('status', 'unknown')
+            entity = req.get('subject_entity_id', '')
+            req_type = req.get('request_type', '')
+            summary = req.get('summary_current', '')[:300]
+            # Extract collected info from payload if available
+            payload = req.get('payload') or {}
+            ic_state = payload.get('info_collection_state') or {}
+            collected_info = ic_state.get('summary_of_collected_info', '')[:400]
+            recent_context += f"{i}. [request_id={rid}] **{name}** (status: {status})\n"
+            recent_context += f"   - Goal: {goal}\n"
+            if entity:
+                recent_context += f"   - Target: {entity}\n"
+            if req_type:
+                recent_context += f"   - Type: {req_type}\n"
+            if summary:
+                recent_context += f"   - Summary: {summary}\n"
+            if collected_info:
+                recent_context += f"   - Collected info so far: {collected_info}\n"
+            recent_context += "\n"
+
     return f"""You are an information collection planner for a caregiver assistant.
 
 Your job is to create a plan for gathering information from the user to help them accomplish their request.
+If a recent request matches the user's current intent, you should resume from where that request left off instead of starting fresh.
 
 ## User's Request:
 {user_request}
@@ -47,6 +75,42 @@ Caregiver: {json.dumps(known_facts.get('caregiver', {}), indent=2, ensure_ascii=
 Care Recipient: {json.dumps(known_facts.get('care_recipient', {}), indent=2, ensure_ascii=False)}
 {known_facts.get('_memory_context', '')}
 {similar_context}
+{recent_context}
+
+## Request Matching Rules
+
+Before creating a new plan, check the Recent Requests above for a match. A request is a MATCH if ALL of these conditions are met:
+
+1. **Same target entity**: The request is about the same person (e.g., both about "care_recipient:mom"). A request about mom is NOT a match for a request about dad.
+2. **Same intent/type**: The core goal is substantially the same (e.g., both "find caregiver", or both "apply for medicaid"). A request to "find a caregiver" is NOT a match for "apply for insurance".
+3. **Not fully completed**: The previous request has status "collecting", "paused", "validated", or "executing" — meaning there's useful work to resume. A "completed" or "aborted" request should NOT be resumed unless the user explicitly wants to redo it.
+
+A request is NOT a match if:
+- The target person is different (different care recipient or user vs care_recipient)
+- The core intent is different even if the topic area overlaps (e.g., "find a caregiver" vs "find a nursing home" — both are care-related but different goals)
+- The old request was completed and the user seems to want a fresh start
+
+### Matching Examples:
+
+**MATCH — resume:**
+- New: "I need to find a caregiver for mom" → Recent: [request_id=req-123] "Find In-Home Caregiver" (status: paused, target: care_recipient:mom, collected info: "Budget: $3000/month, location: Chicago South Loop, needs Chinese-speaking")
+  → Resume from req-123 because same target (mom), same intent (find caregiver), has useful collected info
+
+**MATCH — resume:**
+- New: "Can we continue looking into Medicaid for dad?" → Recent: [request_id=req-456] "Medicaid Application" (status: collecting, target: care_recipient:dad, collected info: "Income under threshold, needs proof of residency")
+  → Resume from req-456 because same target (dad), same intent (medicaid), explicitly continuing
+
+**NOT a match:**
+- New: "Find a caregiver for mom" → Recent: [request_id=req-789] "Find Nursing Home" (target: care_recipient:mom)
+  → Different intent (caregiver ≠ nursing home), create new request
+
+**NOT a match:**
+- New: "Find a caregiver for dad" → Recent: [request_id=req-123] "Find Caregiver" (target: care_recipient:mom)
+  → Different target (dad ≠ mom), create new request
+
+**NOT a match:**
+- New: "I need to find a caregiver" → Recent: [request_id=req-101] "Find In-Home Caregiver" (status: completed)
+  → Previous request was completed; user likely wants a fresh search, create new request
 
 ## Your Task:
 
@@ -99,6 +163,11 @@ Analyze the user's request and create a collection plan. You need to determine:
    - Use the most specific identifier you can infer from the user's message.
    - Default to "care_recipient:unknown" if unclear.
 
+9. **resume_from_request_id**: If you found a matching recent request (per the matching rules above), set this to the request_id of that request. Set to null if no match.
+   - When resuming, still fill in all other fields (request_name, key_info_needed, etc.) but ADAPT them:
+     - In key_info_needed, ONLY ask for information NOT already in the matched request's "Collected info so far"
+     - Acknowledge the previous progress in the questions (e.g., "Last time we discussed budget and location. Is there anything else you'd like to add or change?")
+
 ## Output Format (JSON):
 
 {{
@@ -106,6 +175,7 @@ Analyze the user's request and create a collection plan. You need to determine:
   "request_goal": "string",
   "request_type": "string (from list above)",
   "subject_entity_id": "string",
+  "resume_from_request_id": "string or null",
   "key_info_needed": [
     "Question 1 that must be answered?",
     "Question 2 that must be answered?",
@@ -544,6 +614,7 @@ async def llm_collection_plan(
     user_request: str,
     known_facts: Dict[str, Any],
     similar_requests: List[Dict[str, Any]] | None = None,
+    recent_requests: List[Dict[str, Any]] | None = None,
     client: Any,  # TrackedAnthropicClient instance
 ) -> Dict[str, Any]:
     """
@@ -556,13 +627,15 @@ async def llm_collection_plan(
             "key_info_needed": List[str],
             "nice_to_have_info": List[str],
             "potential_prerequisites": List[Dict[str, str]],
-            "routing_hint": str
+            "routing_hint": str,
+            "resume_from_request_id": str | None
         }
     """
     prompt = make_collection_plan_prompt(
         user_request=user_request,
         known_facts=known_facts,
         similar_requests=similar_requests,
+        recent_requests=recent_requests,
     )
 
     try:
