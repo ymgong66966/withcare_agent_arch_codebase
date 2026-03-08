@@ -62,8 +62,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# In-memory conversation store  {conversation_id: UnifiedState}
-_conversations: Dict[str, UnifiedState] = {}
+# In-memory conversation store  {(user_id, conversation_id): UnifiedState}
+# Keyed by (user_id, conv_id) to prevent cross-user state contamination.
+_conversations: Dict[tuple, UnifiedState] = {}
+
+
+def _conv_key(user_id: str, conv_id: str) -> tuple:
+    """Build the cache key for the conversations dict."""
+    return (user_id or "", conv_id)
 
 # Lazily-built graph (built once on first request)
 _graph = None
@@ -418,9 +424,11 @@ async def chat(req: ChatRequest):
     import traceback
 
     conv_id = req.conversation_id or str(uuid.uuid4())
+    uid = req.user_id or ""
+    key = _conv_key(uid, conv_id)
 
-    if conv_id not in _conversations:
-        state = _init_state(conv_id, user_id=req.user_id or "")
+    if key not in _conversations:
+        state = _init_state(conv_id, user_id=uid)
 
         # Restore full state from DDB (messages + checkpoint + requests)
         try:
@@ -428,9 +436,9 @@ async def chat(req: ChatRequest):
         except Exception as e:
             _chat_logger.warning(f"Failed to restore state from DDB: {e}")
 
-        _conversations[conv_id] = state
+        _conversations[key] = state
 
-    state = _conversations[conv_id]
+    state = _conversations[key]
     graph = _get_graph()
 
     # Capture logs for this request
@@ -452,7 +460,7 @@ async def chat(req: ChatRequest):
     finally:
         root_logger.removeHandler(log_capture)
 
-    _conversations[conv_id] = state
+    _conversations[key] = state
 
     # Build debug payload
     active_req = None
@@ -505,6 +513,7 @@ async def external_send(req: ExternalSendRequest):
     import traceback
 
     conv_id = req.conversation_id or str(uuid.uuid4())
+    key = _conv_key(req.user_id, conv_id)
 
     # Extract the last user message text
     user_text = ""
@@ -515,7 +524,7 @@ async def external_send(req: ExternalSendRequest):
     if not user_text:
         return {"content": "", "agent_type": "error", "needs_human": False, "error": "No user message found"}
 
-    if conv_id not in _conversations:
+    if key not in _conversations:
         state = _init_state(conv_id, user_id=req.user_id)
 
         # Restore full state from DDB (messages + checkpoint + requests)
@@ -524,9 +533,9 @@ async def external_send(req: ExternalSendRequest):
         except Exception as e:
             _chat_logger.warning(f"Failed to restore state for external/send: {e}")
 
-        _conversations[conv_id] = state
+        _conversations[key] = state
 
-    state = _conversations[conv_id]
+    state = _conversations[key]
 
     # If caller indicates needs_human, set it on state before running
     if req.needs_human:
@@ -541,7 +550,7 @@ async def external_send(req: ExternalSendRequest):
         _chat_logger.error(f"[external/send] ERROR: {exc}\n{tb}")
         return {"content": f"[Server error] {exc}", "agent_type": "error", "needs_human": False}
 
-    _conversations[conv_id] = state
+    _conversations[key] = state
 
     reply = _last_assistant_message(state)
     needs_human = getattr(state.routing, "needs_human", False)
@@ -593,7 +602,10 @@ async def onboarding_ingest(req: OnboardingIngestRequest):
 
 @app.post("/reset")
 async def reset(req: ResetRequest):
-    _conversations.pop(req.conversation_id, None)
+    # Remove all cache entries for this conversation_id (any user)
+    keys_to_remove = [k for k in _conversations if k[1] == req.conversation_id]
+    for k in keys_to_remove:
+        _conversations.pop(k, None)
     return {"status": "ok", "conversation_id": req.conversation_id}
 
 
