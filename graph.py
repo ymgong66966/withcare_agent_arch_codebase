@@ -1448,12 +1448,19 @@ async def info_collection_node(state: Dict[str, Any]) -> Dict[str, Any]:
         similar = await fetch_similar_requests(user_id=user_id, request_text=user_text, top_k=5)
         similar_dicts = [s.model_dump() for s in similar] if similar else []
 
-        # Fetch recent requests from DDB for cross-session resume detection
+        # Fetch recent requests from DDB for cross-session resume detection.
+        # Exclude the current active request (just created this turn by the
+        # delegator) and any request with status "created" (nothing to resume).
         recent_request_dicts = []
         try:
             from request_store import get_request_store
             req_store = get_request_store()
-            recent_request_dicts = await req_store.query_recent(user_id=user_id, limit=10)
+            all_recent = await req_store.query_recent(user_id=user_id, limit=10)
+            recent_request_dicts = [
+                r for r in all_recent
+                if r.get("request_id") != active_id
+                and r.get("status") not in ("created", None)
+            ]
         except Exception as e:
             _logger.warning(f"Failed to fetch recent requests (non-fatal): {e}")
 
