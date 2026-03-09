@@ -113,8 +113,13 @@ class ConversationStore:
         self,
         conversation_id: str,
         limit: int = 500,
+        user_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Get all messages for a conversation, ordered by timestamp."""
+        """Get all messages for a conversation, ordered by timestamp.
+
+        If user_id is provided, only returns messages belonging to that user.
+        Messages without a user_id field are included (backward compat).
+        """
         if not self.dynamodb:
             return []
 
@@ -131,6 +136,11 @@ class ConversationStore:
 
             messages = []
             for item in response.get("Items", []):
+                # Verify ownership if user_id is provided
+                if user_id:
+                    item_owner = item.get("user_id", "")
+                    if item_owner and item_owner != user_id:
+                        continue
                 messages.append({
                     k: v for k, v in item.items()
                     if k not in ("pk", "sk", "entity", "gsi1pk", "gsi1sk")

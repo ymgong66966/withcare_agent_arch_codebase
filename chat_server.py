@@ -68,8 +68,12 @@ _conversations: Dict[tuple, UnifiedState] = {}
 
 
 def _conv_key(user_id: str, conv_id: str) -> tuple:
-    """Build the cache key for the conversations dict."""
-    return (user_id or "", conv_id)
+    """Build the cache key for the conversations dict.
+
+    user_id must be non-empty — callers are responsible for generating
+    a unique one if the client didn't provide it.
+    """
+    return (user_id, conv_id)
 
 # Lazily-built graph (built once on first request)
 _graph = None
@@ -228,8 +232,10 @@ async def _restore_state(state: UnifiedState, conv_id: str) -> None:
     """Restore full state from DDB: messages, checkpoint, and requests."""
     conv_store = get_conversation_store()
 
-    # 1. Restore messages
-    previous_msgs = await conv_store.get_messages_for_conversation(conv_id)
+    # 1. Restore messages (scoped by user_id to prevent cross-user leaks)
+    previous_msgs = await conv_store.get_messages_for_conversation(
+        conv_id, user_id=state.meta.user_id,
+    )
     if previous_msgs:
         restored = []
         for msg in previous_msgs:
@@ -244,28 +250,37 @@ async def _restore_state(state: UnifiedState, conv_id: str) -> None:
             )
 
     # 2. Restore checkpoint (routing + request manager metadata)
+    #    Verify the checkpoint belongs to the requesting user before applying.
     checkpoint = await conv_store.get_checkpoint(conv_id)
     if checkpoint:
-        _apply_checkpoint(state, checkpoint)
-        _chat_logger.info(
-            f"Restored checkpoint for conv {conv_id[:8]}: "
-            f"agent={checkpoint.get('current_agent')}, "
-            f"active_req={checkpoint.get('active_request_id')}"
-        )
-
-        # 3. Reload request records from UserRequestTable
-        request_ids = checkpoint.get("request_ids", [])
-        if request_ids and state.meta.user_id:
-            from request_store import get_request_store
-            req_store = get_request_store()
-            raw_items = await req_store.get_requests_by_ids(
-                user_id=state.meta.user_id,
-                request_ids=request_ids,
+        checkpoint_owner = checkpoint.get("user_id", "")
+        requesting_user = state.meta.user_id
+        if checkpoint_owner and requesting_user and checkpoint_owner != requesting_user:
+            _chat_logger.warning(
+                f"Checkpoint owner mismatch: checkpoint has user_id={checkpoint_owner}, "
+                f"but requesting user is {requesting_user}. Skipping checkpoint restore."
             )
-            _rebuild_request_manager(state, raw_items, checkpoint)
+        else:
+            _apply_checkpoint(state, checkpoint)
             _chat_logger.info(
-                f"Restored {len(raw_items)} requests from DDB"
+                f"Restored checkpoint for conv {conv_id[:8]}: "
+                f"agent={checkpoint.get('current_agent')}, "
+                f"active_req={checkpoint.get('active_request_id')}"
             )
+
+            # 3. Reload request records from UserRequestTable
+            request_ids = checkpoint.get("request_ids", [])
+            if request_ids and state.meta.user_id:
+                from request_store import get_request_store
+                req_store = get_request_store()
+                raw_items = await req_store.get_requests_by_ids(
+                    user_id=state.meta.user_id,
+                    request_ids=request_ids,
+                )
+                _rebuild_request_manager(state, raw_items, checkpoint)
+                _chat_logger.info(
+                    f"Restored {len(raw_items)} requests from DDB"
+                )
 
 
 async def _run_turn(graph, state: UnifiedState, user_message: str):
@@ -424,7 +439,9 @@ async def chat(req: ChatRequest):
     import traceback
 
     conv_id = req.conversation_id or str(uuid.uuid4())
-    uid = req.user_id or ""
+    # Never allow empty user_id — generate a unique one per conversation
+    # to prevent cache key collisions between anonymous users.
+    uid = req.user_id or f"anon-{conv_id[:12]}"
     key = _conv_key(uid, conv_id)
 
     if key not in _conversations:

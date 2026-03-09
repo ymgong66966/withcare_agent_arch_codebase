@@ -245,7 +245,9 @@ async def _build_escalation_messages(state: Dict[str, Any], limit: int = 10) -> 
     if conversation_id:
         try:
             store = get_conversation_store()
-            all_msgs = await store.get_messages_for_conversation(conversation_id)
+            all_msgs = await store.get_messages_for_conversation(
+                conversation_id, user_id=meta.get("user_id", ""),
+            )
             if all_msgs:
                 raw_messages = [
                     {
@@ -2105,14 +2107,26 @@ ESCALATION_SERVER = MCPServerConfig(
     keep_alive=True,
 )
 
-# Shared LLM client for deep_search / domain_expert full-mode calls
-_search_llm = TrackedAnthropicClient(agent_role="deep_search")
+def _make_search_llm(state: Dict[str, Any]) -> TrackedAnthropicClient:
+    """Create a per-request LLM client for deep_search / domain_expert.
+
+    Each request gets its own client so session_id and user_id are
+    isolated — no cross-user trace contamination from concurrent requests.
+    """
+    meta = state.get("meta") or {}
+    client = TrackedAnthropicClient(
+        session_id=meta.get("conversation_id", ""),
+        agent_role="deep_search",
+        user_id=meta.get("user_id", ""),
+    )
+    _bind_trace(client, state)
+    return client
 
 
 async def deep_search_node(state: Dict[str, Any]) -> Dict[str, Any]:
     rid = _get_active_request_id(state)
     req = _get_active_request(state) or {}
-    _bind_trace(_search_llm, state)
+    _search_llm = _make_search_llm(state)
 
     # ── Demo mode: unchanged original behavior ──────────────────────────
     if DEEP_SEARCH_MODE == "demo":
@@ -2749,6 +2763,7 @@ was for. If they ask about a specific entity, focus on that entity's requests.
 async def domain_expert_node(state: Dict[str, Any]) -> Dict[str, Any]:
     rid = _get_active_request_id(state)
     req = _get_active_request(state) or {}
+    _search_llm = _make_search_llm(state)
 
     # ── Demo mode: unchanged original behavior ──────────────────────────
     if DEEP_SEARCH_MODE == "demo":
@@ -2857,6 +2872,7 @@ async def quick_answer_node(state: Dict[str, Any]) -> Dict[str, Any]:
     meta = state.get("meta") or {}
     conversation_id = meta.get("conversation_id", "conv-unknown")
     user_id = meta.get("user_id", "user-unknown")
+    _search_llm = _make_search_llm(state)
 
     # Extract the user's question
     user_text = last_user_text(state)
