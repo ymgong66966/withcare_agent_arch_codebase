@@ -1212,27 +1212,38 @@ async def info_collection_node(state: Dict[str, Any]) -> Dict[str, Any]:
         if memory_block:
             known_facts["_memory_context"] = memory_block
     else:
-        # Continuation turn: lightweight fact load for the request's entity.
-        # Skips the full MCP pipeline but ensures the LLM knows stored facts
-        # (e.g., mom's location, budget) so it doesn't re-ask.
+        # Continuation turn: ask LLM if stored facts are needed, then load if yes.
         entity_id = _pre_req.get("subject_entity_id") or ""
         if user_id and entity_id:
             try:
-                from fact_store import get_fact_store
-                _fs = get_fact_store()
-                entity_facts = await _fs.get_active_facts(user_id=user_id, entity_id=entity_id)
-                if entity_facts:
-                    profile_facts_dict = {
-                        f.fact_key: f.fact_value for f in entity_facts
-                    }
-                    # Inject into known_facts so the summarize prompt sees them
-                    entity_type = entity_id.split(":")[0] if ":" in entity_id else "care_recipient"
-                    known_facts.setdefault(entity_type, {}).update(profile_facts_dict)
-                    _logger.info(
-                        f"Loaded {len(entity_facts)} facts for {entity_id} on continuation turn"
-                    )
+                from prompts import llm_memory_need_decision
+                needs_facts = await llm_memory_need_decision(
+                    user_message=user_text,
+                    request_goal=_pre_req.get("goal", ""),
+                    request_entity=entity_id,
+                    previous_summary=_pre_ic.get("summary_of_collected_info", ""),
+                    known_facts_preview=known_facts,
+                    client=client,
+                )
+                if needs_facts:
+                    from fact_store import get_fact_store
+                    _fs = get_fact_store()
+                    entity_facts = await _fs.get_active_facts(user_id=user_id, entity_id=entity_id)
+                    if entity_facts:
+                        profile_facts_dict = {
+                            f.fact_key: f.fact_value for f in entity_facts
+                        }
+                        entity_type = entity_id.split(":")[0] if ":" in entity_id else "care_recipient"
+                        known_facts.setdefault(entity_type, {}).update(profile_facts_dict)
+                        _logger.info(
+                            f"LLM-gated: loaded {len(entity_facts)} facts for {entity_id}"
+                        )
+                    else:
+                        _logger.info(f"LLM requested facts but none found for {entity_id}")
+                else:
+                    _logger.info(f"LLM decided no memory lookup needed for this turn")
             except Exception as e:
-                _logger.debug(f"Lightweight fact load failed (non-fatal): {e}")
+                _logger.debug(f"LLM-gated fact load failed (non-fatal): {e}")
 
         # ── Pending fact confirmations check (via MCP, new requests only) ──
         try:

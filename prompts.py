@@ -217,6 +217,95 @@ Output:
 
 Respond ONLY with the JSON object, no other text."""
 
+def make_memory_need_decision_prompt(
+    *,
+    user_message: str,
+    request_goal: str,
+    request_entity: str,
+    previous_summary: str,
+    known_facts_preview: Dict[str, Any],
+) -> str:
+    """Quick prompt for the LLM to decide if stored facts should be loaded."""
+    facts_preview = json.dumps(known_facts_preview, indent=2, ensure_ascii=False) if known_facts_preview else "(none loaded yet)"
+
+    return f"""You are deciding whether to look up stored user profile facts from the memory system.
+
+## Current request
+- Goal: {request_goal}
+- About: {request_entity}
+- Collected so far: {previous_summary[:300] if previous_summary else "(nothing yet)"}
+
+## User's latest message
+{user_message}
+
+## Facts currently available
+{facts_preview}
+
+## Decision
+
+Should we load stored profile facts for "{request_entity}" from the memory system?
+
+Answer YES if ANY of these apply:
+- The user mentions a person (mom, dad, etc.) and we have no facts about them yet
+- The user says "just search" or "go ahead" but we're missing key details (location, budget, condition) that might be stored
+- The user references information they provided before ("like last time", "same as before", "you already know")
+- The request goal requires details we don't have in the current summary
+
+Answer NO if:
+- We already have sufficient facts loaded for the entity
+- The user is providing new information (not referencing stored data)
+- The question is about something unrelated to the entity's profile
+
+## Examples
+
+User: "for my mom, just start searching" → YES (need mom's location, condition etc.)
+User: "my budget is $3000 per month" → NO (user is providing new info, no lookup needed)
+User: "same requirements as last time" → YES (need to look up what "last time" was)
+User: "I prefer someone who speaks Mandarin" → NO (new info being provided)
+User: "yes, 20 hours per week works" → NO (answering a question, no lookup needed)
+
+Respond with ONLY a JSON object:
+{{"needs_memory_lookup": true/false, "reason": "brief explanation"}}"""
+
+
+async def llm_memory_need_decision(
+    *,
+    user_message: str,
+    request_goal: str,
+    request_entity: str,
+    previous_summary: str,
+    known_facts_preview: Dict[str, Any],
+    client: Any,
+) -> bool:
+    """Ask the LLM whether stored facts should be loaded for this turn.
+
+    Returns True if memory lookup is needed, False otherwise.
+    """
+    prompt = make_memory_need_decision_prompt(
+        user_message=user_message,
+        request_goal=request_goal,
+        request_entity=request_entity,
+        previous_summary=previous_summary,
+        known_facts_preview=known_facts_preview,
+    )
+
+    try:
+        response = await client.async_chat(
+            prompt=prompt,
+            max_tokens=100,
+            temperature=0.0,
+        )
+        result = json.loads(response.strip().strip("`").strip())
+        needs = result.get("needs_memory_lookup", False)
+        reason = result.get("reason", "")
+        if needs:
+            logger.info(f"LLM decided memory lookup needed: {reason}")
+        return bool(needs)
+    except Exception as e:
+        logger.warning(f"Memory need decision failed, defaulting to True: {e}")
+        return True  # fail-open: load facts if we can't decide
+
+
 def make_info_collection_summarize_prompt(
     *,
     request_goal: str,
