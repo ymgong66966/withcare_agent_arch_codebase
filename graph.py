@@ -1211,6 +1211,28 @@ async def info_collection_node(state: Dict[str, Any]) -> Dict[str, Any]:
         memory_block, profile_facts_dict = await _build_memory_context_with_facts(state)
         if memory_block:
             known_facts["_memory_context"] = memory_block
+    else:
+        # Continuation turn: lightweight fact load for the request's entity.
+        # Skips the full MCP pipeline but ensures the LLM knows stored facts
+        # (e.g., mom's location, budget) so it doesn't re-ask.
+        entity_id = _pre_req.get("subject_entity_id") or ""
+        if user_id and entity_id:
+            try:
+                from fact_store import get_fact_store
+                _fs = get_fact_store()
+                entity_facts = await _fs.get_active_facts(user_id=user_id, entity_id=entity_id)
+                if entity_facts:
+                    profile_facts_dict = {
+                        f.fact_key: f.fact_value for f in entity_facts
+                    }
+                    # Inject into known_facts so the summarize prompt sees them
+                    entity_type = entity_id.split(":")[0] if ":" in entity_id else "care_recipient"
+                    known_facts.setdefault(entity_type, {}).update(profile_facts_dict)
+                    _logger.info(
+                        f"Loaded {len(entity_facts)} facts for {entity_id} on continuation turn"
+                    )
+            except Exception as e:
+                _logger.debug(f"Lightweight fact load failed (non-fatal): {e}")
 
         # ── Pending fact confirmations check (via MCP, new requests only) ──
         try:
