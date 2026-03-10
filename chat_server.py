@@ -591,6 +591,7 @@ class OnboardingIngestRequest(BaseModel):
     assessment_score: Optional[int] = None
     assessment_answers: Optional[list] = None  # [{question, answer}]
     tasks: Optional[list] = None
+    tree_qa_pairs: Optional[list] = None  # [{question, answer}] from decision tree Q&A
 
 
 @app.post("/onboarding/ingest")
@@ -598,7 +599,7 @@ async def onboarding_ingest(req: OnboardingIngestRequest):
     """Segment onboarding data into structured fact keys.
 
     Called after onboarding completes. Parses user/recipient fields,
-    mental assessment, and tasks into WithCare_UserFactTable.
+    mental assessment, tree Q&A, and tasks into WithCare_UserFactTable.
     """
     from onboarding_fact_bridge import ingest_onboarding_data
 
@@ -610,6 +611,7 @@ async def onboarding_ingest(req: OnboardingIngestRequest):
             assessment_score=req.assessment_score,
             assessment_answers=req.assessment_answers,
             tasks=req.tasks,
+            tree_qa_pairs=req.tree_qa_pairs,
         )
         return {"status": "ok", **result}
     except Exception as e:
