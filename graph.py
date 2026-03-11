@@ -371,10 +371,15 @@ async def human_comm_node(state: Dict[str, Any]) -> Dict[str, Any]:
             fallback_en="I've forwarded your conversation to our clinical team. They will reach out to you shortly. In the meantime, feel free to let me know if there's anything else I can help with.",
         )
 
+        # Fire-and-forget: Slack got the conversation, return to normal chat.
+        # _escalation_delivered bypasses the sticky needs_human enforcement
+        # in merge_utils so the flag can be cleared.
         return {
             "routing": {
-                "current_agent": "human_comm",
-                "needs_human": True,
+                "current_agent": None,
+                "needs_human": False,
+                "_escalation_delivered": True,
+                "conversation_stage": "chat",
             },
             "messages": [{
                 "role": "assistant",
