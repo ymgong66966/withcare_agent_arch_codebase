@@ -472,6 +472,18 @@ async def turn_router(state: Dict[str, Any]) -> Dict[str, Any]:
             }
         }
 
+    # ── Condition 2: if current_agent is human_comm, always continue there ──
+    # This ensures the user's confirmation ("yes") after a proposal is routed
+    # back to human_comm for processing, not re-classified as a new intent.
+    if routing.get("current_agent") == "human_comm":
+        return {
+            "routing": {
+                "turn_mode": "continuation",
+                "turn_reason": "Continuing human_comm escalation flow (awaiting user confirmation)",
+                "llm_recommended_agent": "human_comm",
+            }
+        }
+
     # Extract metadata for client initialization
     meta = state.get("meta") or {}
     user_id = meta.get("user_id", "user-unknown")
