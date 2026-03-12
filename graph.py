@@ -228,7 +228,7 @@ async def _handle_escalated_turn(state: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-async def _build_escalation_messages(state: Dict[str, Any], limit: int = 10) -> List[Dict[str, Any]]:
+async def _build_escalation_messages(state: Dict[str, Any], limit: int = 20) -> List[Dict[str, Any]]:
     """Build a list of recent messages formatted for the escalation lambda.
 
     Reads from DynamoDB (UserConversationTable) first so that messages survive
