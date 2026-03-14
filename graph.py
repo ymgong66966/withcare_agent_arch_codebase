@@ -2279,16 +2279,22 @@ async def deep_search_node(state: Dict[str, Any]) -> Dict[str, Any]:
             results = await asyncio.gather(*tasks, return_exceptions=True)
 
             tavily_texts = []
-            for r in results:
+            for i, r in enumerate(results):
                 if isinstance(r, Exception):
-                    _deep_search_logger.warning(f"[TAVILY] Query failed: {r}")
+                    _deep_search_logger.warning(f"[TAVILY] Query {i} failed: {r}")
                     continue
                 data = (r.get("_mcp_result") or {}).get("data") or {}
-                result_str = _json.dumps(data, ensure_ascii=False, default=str)[:3000]
+                # Tavily deep search returns rich content — allow up to 6000 chars per result
+                result_str = _json.dumps(data, ensure_ascii=False, default=str)[:6000]
+                _deep_search_logger.info(
+                    f"[TAVILY] Query {i} result: {len(result_str)} chars, "
+                    f"items={len(data) if isinstance(data, list) else 'dict'}, "
+                    f"preview={result_str[:300]}"
+                )
                 if result_str and result_str != "{}":
                     tavily_texts.append(f"[tavily_search_deep] {result_str}")
 
-            _deep_search_logger.info(f"[TAVILY] Collected {len(tavily_texts)} result blocks")
+            _deep_search_logger.info(f"[TAVILY] Collected {len(tavily_texts)} result blocks, total chars={sum(len(t) for t in tavily_texts)}")
             return tavily_texts
         except Exception as e:
             _deep_search_logger.warning(f"[TAVILY] Enrichment failed (non-fatal): {e}")
@@ -2369,8 +2375,8 @@ async def deep_search_node(state: Dict[str, Any]) -> Dict[str, Any]:
             break
 
         tool_result_data = (tool_patch.get("_mcp_result") or {}).get("data") or {}
-        tool_result_str = _json.dumps(tool_result_data, ensure_ascii=False, default=str)[:3000]
-        _deep_search_logger.info(f"[LOOP] Tool result ({len(tool_result_str)} chars): {tool_result_str[:200]}")
+        tool_result_str = _json.dumps(tool_result_data, ensure_ascii=False, default=str)[:5000]
+        _deep_search_logger.info(f"[LOOP] Tool result ({len(tool_result_str)} chars): {tool_result_str[:300]}")
         all_results.append(f"[{tool_name}] {tool_result_str}")
 
         # If last iteration, break and summarize
