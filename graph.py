@@ -2421,7 +2421,7 @@ async def deep_search_node(state: Dict[str, Any]) -> Dict[str, Any]:
             all_results="\n\n".join(all_results),
         )
         try:
-            final_summary = await _search_llm.async_chat(summary_prompt, max_tokens=2000)
+            final_summary = await _search_llm.async_chat(summary_prompt, max_tokens=4096)
         except Exception:
             final_summary = "\n\n".join(all_results)
     else:
