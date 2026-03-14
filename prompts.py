@@ -1046,6 +1046,18 @@ If the current agent is deep_search and ANY of these apply, set recommended_agen
 - The user says they want to give up on the current search approach
 Do NOT recommend human_comm for minor clarifications or simple follow-up questions.
 
+## Human Support Reply Detection
+Check the recent conversation for messages with role "human" (from clinical support team).
+If ANY of the last 3 messages has role "human" (shown as [HUMAN] in the conversation),
+AND the user's latest message is responding to or related to what the human support said,
+classify as:
+  turn_mode: "continuation"
+  recommended_agent: "human_comm"
+  reason: "User is responding to human support team message"
+
+If the user's message is NOT related to the human message (e.g., they're asking about
+something completely different), route normally — the human message is just context.
+
 ## CRITICAL: Do NOT misroute skip/proceed signals as emotional support
 When the current agent is info_collection and the user expresses impatience with questions:
 - "I don't want to answer more questions" → This is a PROCEED signal, NOT emotional distress.

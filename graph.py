@@ -177,7 +177,9 @@ async def _human_comm_llm_reply(
 
 
 async def _handle_escalated_turn(state: Dict[str, Any]) -> Dict[str, Any]:
-    """When needs_human=True, forward the user message to the lambda and return ack."""
+    """DEPRECATED: Previously called when needs_human=True. Now unused —
+    human replies are detected via role='human' messages and handled by
+    human_comm_node reply mode. Kept temporarily for reference."""
     meta = state.get("meta") or {}
     user_id = meta.get("user_id", "")
     conversation_id = meta.get("conversation_id", "")
@@ -220,7 +222,6 @@ async def _handle_escalated_turn(state: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "routing": {
             "current_agent": "human_comm",
-            "needs_human": True,
         },
         "messages": [{
             "role": "assistant",
@@ -279,12 +280,18 @@ async def _build_escalation_messages(state: Dict[str, Any], limit: int = 20) -> 
 
 
 async def human_comm_node(state: Dict[str, Any]) -> Dict[str, Any]:
-    """Human escalation agent node — proposal and confirmation modes."""
+    """Human escalation agent node — reply, proposal, and confirmation modes."""
     meta = state.get("meta") or {}
     user_id = meta.get("user_id", "")
     conversation_id = meta.get("conversation_id", "")
     user_text = last_user_text(state)
     messages = state.get("messages") or []
+
+    # ── Reply mode: user responding to a human support message ──
+    has_recent_human = any(
+        m.get("role") == "human"
+        for m in (messages[-5:] if len(messages) >= 5 else messages)
+    )
 
     # Check if there's a prior human_comm assistant message (proposal already sent)
     has_prior_proposal = any(
@@ -292,6 +299,45 @@ async def human_comm_node(state: Dict[str, Any]) -> Dict[str, Any]:
         and (m.get("agent") or (m.get("metadata") or {}).get("agent")) == "human_comm"
         for m in messages
     )
+
+    if has_recent_human and not has_prior_proposal:
+        # User is replying to a human support message — forward + acknowledge
+        ack_text = await _human_comm_llm_reply(
+            state,
+            instruction=(
+                "The user is replying to a message from the clinical support team. "
+                "Generate a brief acknowledgment (1 sentence) that you'll pass their "
+                "message along. Be warm and natural."
+            ),
+            fallback_zh="我会把您的消息转达给支持团队。",
+            fallback_en="I'll pass that along to the support team.",
+        )
+
+        # Forward to existing Slack thread (mode="reply" avoids creating new escalation)
+        try:
+            await call_mcp_tool_patch(
+                mgr=MCP_MGR,
+                server=ESCALATION_SERVER,
+                tool_name="human_escalation_deliver",
+                arguments={
+                    "user_id": user_id,
+                    "chat_id": conversation_id,
+                    "messages": [{"role": "user", "text": user_text, "message_Id": new_uuid("msg"), "dateSent": datetime.utcnow().isoformat()}],
+                    "mode": "reply",
+                },
+                purpose="Forward user reply to existing human support Slack thread",
+            )
+        except Exception as e:
+            _logger.warning(f"human_comm reply forward failed (non-fatal): {e}")
+
+        return {
+            "routing": {"current_agent": "human_comm"},
+            "messages": [{
+                "role": "assistant",
+                "content": ack_text,
+                "metadata": {"agent": "human_comm"},
+            }],
+        }
 
     if not has_prior_proposal:
         # ── Proposal mode: generate warm proposal via LLM ──
@@ -374,13 +420,9 @@ async def human_comm_node(state: Dict[str, Any]) -> Dict[str, Any]:
         )
 
         # Fire-and-forget: Slack got the conversation, return to normal chat.
-        # _escalation_delivered bypasses the sticky needs_human enforcement
-        # in merge_utils so the flag can be cleared.
         return {
             "routing": {
                 "current_agent": None,
-                "needs_human": False,
-                "_escalation_delivered": True,
                 "conversation_stage": "chat",
             },
             "messages": [{
@@ -463,10 +505,6 @@ async def turn_router(state: Dict[str, Any]) -> Dict[str, Any]:
     Falls back to heuristic-based routing if LLM call fails.
     """
     routing = state.get("routing") or {}
-
-    # ── If already in human escalation mode, deliver message and respond ──
-    if routing.get("needs_human") is True:
-        return await _handle_escalated_turn(state)
 
     # ── Condition 1: deep_search streak check (heuristic, before LLM call) ──
     streak_trigger = _detect_deep_search_streak(state)
@@ -3450,8 +3488,11 @@ def build_graph():
         },
     )
 
-    for n in ["front_end", "info_collection", "deep_search", "user_info", "domain_expert", "quick_answer", "human_comm"]:
+    for n in ["front_end", "info_collection", "deep_search", "user_info", "domain_expert", "quick_answer"]:
         g.add_edge(n, "downstream_catcher")
+
+    # human_comm goes straight to END (ack/forward, no downstream processing)
+    g.add_edge("human_comm", END)
 
     g.add_conditional_edges(
         "downstream_catcher",

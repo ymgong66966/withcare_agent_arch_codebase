@@ -57,7 +57,7 @@ InconsistencyResolution = Literal["ask_user", "update_profile", "ignore_for_now"
 
 class ChatMessage(BaseModel):
     model_config = ConfigDict(extra="allow")
-    role: Literal["system", "developer", "user", "assistant", "tool"]
+    role: Literal["system", "developer", "user", "assistant", "human", "tool"]
     content: str
     message_id: Optional[str] = None
     ts: datetime = Field(default_factory=datetime.utcnow)
@@ -228,6 +228,9 @@ class Routing(BaseModel):
     llm_recommended_agent: Optional[str] = None
     delegator_debug: Optional[Dict[str, Any]] = None
     pending_handoff: Handoff = Field(default_factory=Handoff)
+    # DEPRECATED: needs_human is no longer used for routing decisions.
+    # Kept for backward compatibility with existing DDB checkpoints.
+    # Smart routing now detects human support messages via role="human" in recent messages.
     needs_human: bool = False
 
 class ToolState(BaseModel):

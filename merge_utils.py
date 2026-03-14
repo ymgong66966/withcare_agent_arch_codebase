@@ -126,11 +126,8 @@ def apply_node_output(state: UnifiedState, node_output: Union[Dict[str, Any], Ba
 
     if "routing" in out:
         r = out.pop("routing") or {}
-        # Sticky needs_human: once True, never revert within LangGraph
-        # UNLESS _escalation_delivered is set (fire-and-forget: Slack got it, resume normal chat)
-        if r.get("needs_human") is False and getattr(state.routing, "needs_human", False):
-            if not r.pop("_escalation_delivered", False):
-                r.pop("needs_human", None)
+        # Clean up legacy _escalation_delivered flag if present
+        r.pop("_escalation_delivered", None)
         for k, v in r.items():
             if k == "pending_handoff" and isinstance(v, dict):
                 v = Handoff.model_validate(v)

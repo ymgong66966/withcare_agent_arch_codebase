@@ -177,7 +177,6 @@ def _build_checkpoint_data(state: UnifiedState) -> Dict[str, Any]:
     return {
         "current_agent": state.routing.current_agent,
         "conversation_stage": state.routing.conversation_stage,
-        "needs_human": state.routing.needs_human,
         "turn_mode": state.routing.turn_mode,
         "active_request_id": rm.active_request_id,
         "request_ids": list(rm.requests.keys()),
@@ -191,8 +190,6 @@ def _apply_checkpoint(state: UnifiedState, checkpoint: Dict[str, Any]) -> None:
         state.routing.current_agent = checkpoint["current_agent"]
     if checkpoint.get("conversation_stage"):
         state.routing.conversation_stage = checkpoint["conversation_stage"]
-    if checkpoint.get("needs_human"):
-        state.routing.needs_human = True  # sticky: only set to True
     if checkpoint.get("turn_mode"):
         state.routing.turn_mode = checkpoint["turn_mode"]
 
@@ -276,7 +273,7 @@ async def _restore_state(state: UnifiedState, conv_id: str) -> None:
         for msg in previous_msgs:
             role = msg.get("role", "user")
             content = msg.get("content", "")
-            if role in ("user", "assistant") and content:
+            if role in ("user", "assistant", "human") and content:
                 restored.append(ChatMessage(role=role, content=content))
         if restored:
             state.messages = restored
@@ -438,7 +435,6 @@ async def _run_turn(graph, state: UnifiedState, user_message: str):
                     "turn_mode": state.routing.turn_mode,
                     "turn_reason": state.routing.turn_reason,
                     "active_request_id": state.request_manager.active_request_id,
-                    "needs_human": state.routing.needs_human,
                     "conversation_stage": state.routing.conversation_stage,
                 },
             )
@@ -463,7 +459,6 @@ class ResetRequest(BaseModel):
 class ExternalSendRequest(BaseModel):
     user_id: str
     messages: list  # [{role, text}]
-    needs_human: bool = False
     conversation_id: Optional[str] = None
 
 
@@ -559,8 +554,8 @@ async def chat(req: ChatRequest):
 async def external_send(req: ExternalSendRequest):
     """External endpoint for lambda integration.
 
-    Returns {content, agent_type, needs_human} so the lambda can
-    trigger Slack when agent_type == "human_support".
+    Returns {content, agent_type} so the lambda can determine
+    how to handle the response.
     """
     import traceback
 
@@ -574,7 +569,7 @@ async def external_send(req: ExternalSendRequest):
             user_text = msg["text"]
             break
     if not user_text:
-        return {"content": "", "agent_type": "error", "needs_human": False, "error": "No user message found"}
+        return {"content": "", "agent_type": "error", "error": "No user message found"}
 
     if key not in _conversations:
         state = _init_state(conv_id, user_id=req.user_id)
@@ -589,10 +584,6 @@ async def external_send(req: ExternalSendRequest):
 
     state = _conversations[key]
 
-    # If caller indicates needs_human, set it on state before running
-    if req.needs_human:
-        state.routing.needs_human = True
-
     graph = _get_graph()
 
     try:
@@ -600,21 +591,16 @@ async def external_send(req: ExternalSendRequest):
     except Exception as exc:
         tb = traceback.format_exc()
         _chat_logger.error(f"[external/send] ERROR: {exc}\n{tb}")
-        return {"content": f"[Server error] {exc}", "agent_type": "error", "needs_human": False}
+        return {"content": f"[Server error] {exc}", "agent_type": "error"}
 
     _conversations[key] = state
 
     reply = _last_assistant_message(state)
-    needs_human = getattr(state.routing, "needs_human", False)
     current_agent = state.routing.current_agent or ""
-
-    # When needs_human is True, report agent_type as "human_support" so lambda triggers Slack
-    agent_type = "human_support" if needs_human else current_agent
 
     return {
         "content": reply,
-        "agent_type": agent_type,
-        "needs_human": needs_human,
+        "agent_type": current_agent,
         "conversation_id": conv_id,
     }
 
