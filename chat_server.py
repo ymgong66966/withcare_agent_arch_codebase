@@ -242,13 +242,35 @@ def _rebuild_request_manager(
 
 
 async def _restore_state(state: UnifiedState, conv_id: str) -> None:
-    """Restore full state from DDB: messages, checkpoint, and requests."""
+    """Restore full state from DDB: messages, checkpoint, and requests.
+
+    If the given conv_id has no data (e.g., new browser session after pod
+    restart), falls back to the user's most recent conversation so that
+    prior messages, checkpoints, and request references are not lost.
+    """
     conv_store = get_conversation_store()
+    restore_conv_id = conv_id
 
     # 1. Restore messages (scoped by user_id to prevent cross-user leaks)
     previous_msgs = await conv_store.get_messages_for_conversation(
-        conv_id, user_id=state.meta.user_id,
+        restore_conv_id, user_id=state.meta.user_id,
     )
+
+    # Fallback: if no messages found for this conv_id, look up the user's
+    # most recent conversation and restore from that instead.
+    if not previous_msgs and state.meta.user_id:
+        latest_conv_id = await conv_store.get_latest_conversation_id_for_user(
+            state.meta.user_id,
+        )
+        if latest_conv_id and latest_conv_id != conv_id:
+            _chat_logger.info(
+                f"No data for conv {conv_id[:8]}, falling back to user's "
+                f"latest conversation {latest_conv_id[:8]}"
+            )
+            restore_conv_id = latest_conv_id
+            previous_msgs = await conv_store.get_messages_for_conversation(
+                restore_conv_id, user_id=state.meta.user_id,
+            )
     if previous_msgs:
         restored = []
         for msg in previous_msgs:
@@ -264,7 +286,7 @@ async def _restore_state(state: UnifiedState, conv_id: str) -> None:
 
     # 2. Restore checkpoint (routing + request manager metadata)
     #    Verify the checkpoint belongs to the requesting user before applying.
-    checkpoint = await conv_store.get_checkpoint(conv_id)
+    checkpoint = await conv_store.get_checkpoint(restore_conv_id)
     if checkpoint:
         checkpoint_owner = checkpoint.get("user_id", "")
         requesting_user = state.meta.user_id

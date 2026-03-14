@@ -211,6 +211,52 @@ class ConversationStore:
             logger.error(f"Failed to get checkpoint: {e}")
             return None
 
+    async def get_latest_conversation_id_for_user(
+        self,
+        user_id: str,
+        lookback_days: int = 7,
+    ) -> Optional[str]:
+        """Find the user's most recent conversation_id by scanning recent dates.
+
+        Queries GSI1 in reverse across the last `lookback_days` days.
+        Returns the conversation_id from the most recent message, or None.
+        """
+        if not self.dynamodb:
+            return None
+
+        from datetime import timedelta
+
+        try:
+            table = self._table()
+            today = datetime.utcnow().date()
+
+            for day_offset in range(lookback_days):
+                date_str = (today - timedelta(days=day_offset)).isoformat()
+                gsi1pk = f"USER#{user_id}#DATE#{date_str}"
+
+                response = table.query(
+                    IndexName="GSI1",
+                    KeyConditionExpression=Key("gsi1pk").eq(gsi1pk),
+                    ScanIndexForward=False,  # newest first
+                    Limit=1,
+                )
+
+                items = response.get("Items", [])
+                if items:
+                    pk = items[0].get("pk", "")
+                    if pk.startswith("CONV#"):
+                        conv_id = pk[len("CONV#"):]
+                        logger.info(
+                            f"Found latest conversation for {user_id}: "
+                            f"{conv_id[:8]}... from {date_str}"
+                        )
+                        return conv_id
+
+            return None
+        except Exception as e:
+            logger.warning(f"Failed to find latest conversation for {user_id}: {e}")
+            return None
+
     async def get_messages_for_user_date(
         self,
         user_id: str,
