@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import uuid
 
 from dotenv import load_dotenv
@@ -17,11 +18,23 @@ load_dotenv()
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from decimal import Decimal
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+
+def _strip_decimals(obj):
+    """Recursively convert Decimal values to float for JSON serialization."""
+    if isinstance(obj, Decimal):
+        return float(obj)
+    if isinstance(obj, dict):
+        return {k: _strip_decimals(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_strip_decimals(v) for v in obj]
+    return obj
 
 import logging
 
@@ -317,7 +330,7 @@ async def _run_turn(graph, state: UnifiedState, user_message: str):
     except Exception as e:
         _chat_logger.warning(f"Failed to persist user message: {e}")
 
-    state_dict = state.model_dump()
+    state_dict = _strip_decimals(state.model_dump())
     if _lf_trace:
         state_dict["_langfuse_trace"] = _lf_trace
 
@@ -348,7 +361,7 @@ async def _run_turn(graph, state: UnifiedState, user_message: str):
         state = apply_node_output(state, node_output)
         state = _consume_ddb_writes(state)
         state = _cleanup_transient(state)
-        state_dict = state.model_dump()
+        state_dict = _strip_decimals(state.model_dump())
 
     # Fallback: read from state.__dict__ (setattr'd by apply_node_output)
     if "memory_context" not in debug:
