@@ -287,11 +287,15 @@ async def human_comm_node(state: Dict[str, Any]) -> Dict[str, Any]:
     user_text = last_user_text(state)
     messages = state.get("messages") or []
 
-    # ── Reply mode: user responding to a human support message ──
-    has_recent_human = any(
-        m.get("role") == "human"
-        for m in (messages[-5:] if len(messages) >= 5 else messages)
-    )
+    # ── Reply mode: detect if the most recent non-user message is from human support ──
+    # This must be checked FIRST and takes priority over proposal/confirmation,
+    # because after an escalation cycle the conversation will have prior human_comm
+    # messages but the user may now be responding to a new human reply.
+    last_non_user_role = None
+    for m in reversed(messages):
+        if m.get("role") != "user":
+            last_non_user_role = m.get("role")
+            break
 
     # Check if there's a prior human_comm assistant message (proposal already sent)
     has_prior_proposal = any(
@@ -300,7 +304,7 @@ async def human_comm_node(state: Dict[str, Any]) -> Dict[str, Any]:
         for m in messages
     )
 
-    if has_recent_human and not has_prior_proposal:
+    if last_non_user_role == "human":
         # User is replying to a human support message — forward + acknowledge
         ack_text = await _human_comm_llm_reply(
             state,
