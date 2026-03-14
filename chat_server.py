@@ -60,7 +60,7 @@ class _LogCapture(logging.Handler):
 from state_models import UnifiedState, Meta, ChatMessage, PendingQueueItem, RequestRecord
 from merge_utils import apply_node_output
 from graph import build_graph, check_prereq_lifecycle
-from ddb_client import get_ddb_resource, USER_REQUEST_TABLE
+from ddb_client import get_ddb_resource, get_table, USER_REQUEST_TABLE, CHAT_MESSAGES_TABLE
 from conversation_store import get_conversation_store
 
 _chat_logger = logging.getLogger(__name__)
@@ -162,6 +162,29 @@ def _consume_ddb_writes(state: UnifiedState) -> UnifiedState:
 def _cleanup_transient(state: UnifiedState) -> UnifiedState:
     state.__dict__.pop("_mcp_result", None)
     return state
+
+
+async def _write_chat_message(user_id: str, conversation_id: str, role: str, content: str) -> None:
+    """Write a single message to the ChatMessages time-series table (fire-and-forget)."""
+    table = get_table(CHAT_MESSAGES_TABLE)
+    if table is None:
+        return
+    from datetime import datetime
+    from id_utils import new_uuid
+    now_iso = datetime.utcnow().isoformat()
+    msg_id = new_uuid("msg")
+    try:
+        table.put_item(Item={
+            "user_Id": user_id,
+            "sort_key": f"{now_iso}#{msg_id}",
+            "chat_Id": conversation_id,
+            "role": role,
+            "text": content,
+            "message_Id": msg_id,
+            "dateSent": now_iso,
+        })
+    except Exception as e:
+        _chat_logger.warning(f"ChatMessages write failed (non-fatal): {e}")
 
 
 def _last_assistant_message(state: UnifiedState) -> str:
@@ -349,6 +372,14 @@ async def _run_turn(graph, state: UnifiedState, user_message: str):
     except Exception as e:
         _chat_logger.warning(f"Failed to persist user message: {e}")
 
+    # Dual-write user message to ChatMessages (fire-and-forget)
+    await _write_chat_message(
+        user_id=state.meta.user_id,
+        conversation_id=state.meta.conversation_id,
+        role="user",
+        content=user_message,
+    )
+
     state_dict = _strip_decimals(state.model_dump())
     if _lf_trace:
         state_dict["_langfuse_trace"] = _lf_trace
@@ -400,8 +431,8 @@ async def _run_turn(graph, state: UnifiedState, user_message: str):
         state = _consume_ddb_writes(state)
 
     # Persist assistant reply (fire-and-forget)
+    assistant_reply = _last_assistant_message(state)
     try:
-        assistant_reply = _last_assistant_message(state)
         if assistant_reply:
             conv_store = get_conversation_store()
             await conv_store.write_message(
@@ -412,6 +443,15 @@ async def _run_turn(graph, state: UnifiedState, user_message: str):
             )
     except Exception as e:
         _chat_logger.warning(f"Failed to persist assistant message: {e}")
+
+    # Dual-write assistant reply to ChatMessages (fire-and-forget)
+    if assistant_reply:
+        await _write_chat_message(
+            user_id=state.meta.user_id,
+            conversation_id=state.meta.conversation_id,
+            role="assistant",
+            content=assistant_reply,
+        )
 
     # Persist checkpoint (fire-and-forget)
     try:

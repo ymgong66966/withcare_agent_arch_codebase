@@ -31,6 +31,7 @@ MEMORY_FACT_LOG_TABLE = f"{TABLE_PREFIX}MemoryFactLogTable"
 USER_REQUEST_TABLE = f"{TABLE_PREFIX}UserRequestTable"
 CANDIDATE_KEY_POOL_TABLE = f"{TABLE_PREFIX}CandidateKeyPool"
 USER_CONVERSATION_TABLE = f"{TABLE_PREFIX}UserConversationTable"
+CHAT_MESSAGES_TABLE = os.environ.get("CHAT_MESSAGES_TABLE", "ChatMessages")
 
 # Lazy singletons
 _ddb_client: Optional[Any] = None
