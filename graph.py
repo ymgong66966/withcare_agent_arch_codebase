@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -44,6 +45,7 @@ from deep_search_prompts import (
     DOMAIN_EXPERT_SYNTHESIS_PROMPT,
     QUICK_ANSWER_PROMPT,
     QUICK_ANSWER_DECISION_PROMPT,
+    TAVILY_QUERY_GENERATION_PROMPT,
 )
 
 RouteKey = Literal[
@@ -2231,6 +2233,70 @@ async def deep_search_node(state: Dict[str, Any]) -> Dict[str, Any]:
         f"default_query={default_query[:100]!r}"
     )
 
+    # ── Parallel Tavily enrichment (runs alongside the main sequential loop) ──
+
+    def _parse_tavily_queries(response: str) -> List[str]:
+        """Parse LLM response into a list of query strings."""
+        try:
+            queries = _json.loads(response)
+            if isinstance(queries, list):
+                return [q for q in queries if isinstance(q, str) and q.strip()][:3]
+        except _json.JSONDecodeError:
+            try:
+                start = response.index("[")
+                end = response.rindex("]") + 1
+                queries = _json.loads(response[start:end])
+                if isinstance(queries, list):
+                    return [q for q in queries if isinstance(q, str) and q.strip()][:3]
+            except (ValueError, _json.JSONDecodeError):
+                pass
+        return []
+
+    async def _tavily_enrichment() -> List[str]:
+        """Generate context-rich Tavily queries and run them in parallel."""
+        try:
+            query_prompt = TAVILY_QUERY_GENERATION_PROMPT.format(
+                goal=goal or "(see collected info)",
+                collected_info=full_context[:2000],
+            )
+            query_response = await _search_llm.async_chat(query_prompt, max_tokens=500)
+            queries = _parse_tavily_queries(query_response)
+            _deep_search_logger.info(f"[TAVILY] Generated {len(queries)} queries: {queries}")
+
+            if not queries:
+                return []
+
+            tasks = []
+            for q in queries:
+                tasks.append(call_mcp_tool_patch(
+                    mgr=MCP_MGR,
+                    server=SEARCH_SERVER,
+                    tool_name="tavily_search_deep",
+                    arguments={"query": q, "max_results": 3},
+                    purpose=f"Tavily parallel enrichment: {q[:80]}",
+                    timeout_s=30,
+                ))
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            tavily_texts = []
+            for r in results:
+                if isinstance(r, Exception):
+                    _deep_search_logger.warning(f"[TAVILY] Query failed: {r}")
+                    continue
+                data = (r.get("_mcp_result") or {}).get("data") or {}
+                result_str = _json.dumps(data, ensure_ascii=False, default=str)[:3000]
+                if result_str and result_str != "{}":
+                    tavily_texts.append(f"[tavily_search_deep] {result_str}")
+
+            _deep_search_logger.info(f"[TAVILY] Collected {len(tavily_texts)} result blocks")
+            return tavily_texts
+        except Exception as e:
+            _deep_search_logger.warning(f"[TAVILY] Enrichment failed (non-fatal): {e}")
+            return []
+
+    # Launch Tavily enrichment as a background task — runs while the main loop executes
+    _tavily_task = asyncio.create_task(_tavily_enrichment())
+
     # 1. Initial strategy call
     strategy_prompt = DEEP_SEARCH_STRATEGY_PROMPT.format(
         tool_descriptions=TOOL_DESCRIPTIONS,
@@ -2331,6 +2397,15 @@ async def deep_search_node(state: Dict[str, Any]) -> Dict[str, Any]:
             break
 
     _deep_search_logger.info(f"[DONE] Loop finished. all_results count={len(all_results)}, all_tool_runs count={len(all_tool_runs)}")
+
+    # ── Collect parallel Tavily results ──────────────────────────────
+    try:
+        tavily_results = await _tavily_task
+        if tavily_results:
+            _deep_search_logger.info(f"[TAVILY] Merging {len(tavily_results)} Tavily result blocks into all_results")
+            all_results.extend(tavily_results)
+    except Exception as e:
+        _deep_search_logger.warning(f"[TAVILY] Failed to collect results (non-fatal): {e}")
 
     # Generate final summary if we haven't got a "done" summary
     if all_results and not (isinstance(all_results[-1], str) and not all_results[-1].startswith("[")):

@@ -36,6 +36,19 @@ You have access to the following search tools (MCP server):
    Scrape up to 5 URLs and extract structured answers. Input: list of URLs +
    list of query strings. Output: extracted content per URL.
    COST NOTE: most expensive tool — only use after website_map narrows URLs.
+
+5. **tavily_search(query, max_results)**
+   LLM-optimized web search via Tavily. Returns clean content snippets plus
+   an AI-synthesized answer. Best for: quick factual queries, policy lookups,
+   eligibility info. Works well with detailed, natural-language queries.
+   NOTE: Tavily queries also run automatically in parallel — you do NOT need
+   to explicitly call this tool. Focus on the tools above for your strategy.
+
+6. **tavily_search_deep(query, max_results, include_domains, exclude_domains)**
+   Deep Tavily search with full page content. Best for: specific requirements
+   (language, budget, location), comparing providers. Excels with descriptive,
+   sentence-length queries that include constraints.
+   NOTE: Like tavily_search, this also runs automatically in parallel.
 """
 
 # ---------------------------------------------------------------------------
@@ -252,4 +265,50 @@ user's question.
 6. If search results are insufficient, say so and suggest what to research next.
 
 Provide your structured guidance:
+"""
+
+# ---------------------------------------------------------------------------
+# Tavily query generation prompt (used by parallel enrichment)
+# ---------------------------------------------------------------------------
+
+TAVILY_QUERY_GENERATION_PROMPT = """\
+You are generating search queries for Tavily, a search API that works best with
+detailed, natural-language queries (NOT short keyword-style Google queries).
+
+Given the user's caregiving request and context below, generate 2-3 specific
+search queries. Each query should be a complete, descriptive phrase.
+
+## Guidelines
+- If the request involves a LOCATION, include the city/state/area in EVERY query
+- If there are specific REQUIREMENTS (language, budget, hours, insurance), include them
+- Include the care recipient's relationship (e.g., "elderly father", "mother with dementia")
+- Be specific about the type of service or information needed
+- Each query should target a DIFFERENT ASPECT of the request
+- Queries should be 15-30 words long for best results
+
+## Examples
+
+Context: "Find in-home care for dad in Los Angeles, needs Mandarin speaker, budget $25/hr"
+Queries:
+["Mandarin speaking in-home caregiver services Los Angeles California under $25 per hour elderly care",
+ "Chinese language home care agencies serving Los Angeles area affordable rates for seniors",
+ "bilingual Mandarin English home health aide agencies in LA County with hourly pricing"]
+
+Context: "Does Medicare cover physical therapy for back pain?"
+Queries:
+["Medicare Part B coverage for outpatient physical therapy back pain treatment 2025 2026",
+ "how many physical therapy sessions does Medicare cover per year and what are the copays"]
+
+Context: "Find a good adult daycare near Chicago for mom with early dementia"
+Queries:
+["adult day care centers Chicago Illinois specializing in dementia and Alzheimer care for elderly",
+ "memory care adult day programs near Chicago with activities for early stage dementia patients",
+ "affordable adult daycare services Chicago area that accept Medicare Medicaid for seniors with cognitive decline"]
+
+## User's request
+Goal: {goal}
+Context: {collected_info}
+
+Respond with ONLY a JSON array of 2-3 query strings (no markdown fences):
+["query 1", "query 2"]
 """
