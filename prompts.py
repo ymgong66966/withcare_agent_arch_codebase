@@ -979,6 +979,13 @@ def make_turn_mode_prompt(
 - Status: {req_status}
   (Status meanings: "collecting" = gathering info, "validated" = info complete and handed off to execution agent, "executed" = task done, "paused" = waiting for another task, "completed" = fully closed)
 
+## Resume Awareness
+If there is an active request with status "collecting" and the user's message relates to
+searching, proceeding, or starting — this is almost always a CONTINUATION of the active
+request, not a new_intent. The info_collection agent will detect the "proceed" signal and
+hand off appropriately. Do NOT create a new request when the user is simply asking to
+move forward with an existing one.
+
 ## Recent Conversation (last up to 20 turns):
 {conversation_context}
 
@@ -1004,8 +1011,16 @@ After an execution agent (deep_search, domain_expert, user_info) has delivered r
 - User expresses emotions like "Taking care of elderly parents is exhausting" → **new_intent** (needs emotional support)
 
 During info collection (status = "collecting"):
-- User answers a question or says "just proceed with what we have" → **continuation**
-- User switches to a completely different topic → **new_intent**
+- User answers a question → **continuation** (info_collection)
+- User says they want to proceed, skip questions, or start searching → **continuation** (info_collection).
+  The info_collection agent has built-in logic to detect these "proceed" signals and will hand off to
+  the execution agent automatically. Examples of proceed signals:
+  - "just proceed with what we have" → continuation to info_collection
+  - "I don't want to answer more questions" → continuation to info_collection
+  - "stop asking, just search" → continuation to info_collection
+  - "that's enough info" / "enough questions" → continuation to info_collection
+  - "start searching" / "go ahead" → continuation to info_collection
+- User switches to a COMPLETELY DIFFERENT topic (not about skipping/proceeding) → **new_intent**
 
 ## Examples of NEW_INTENT:
 - Assistant (deep_search) returned search results, user says "Okay, got it, thanks" → NEW_INTENT (user acknowledged results, done with task)
@@ -1018,6 +1033,9 @@ During info collection (status = "collecting"):
 ## Examples of CONTINUATION:
 - Assistant (info_collection) asks "what's your budget?", user responds "around $2000/month" → CONTINUATION (answering question)
 - Assistant (info_collection) finishes gathering info, conversation naturally moves to deep_search to execute the task → CONTINUATION (natural progression, but agent changes to deep_search)
+- Assistant (info_collection) asks for details, user says "I don't want to answer more questions" → CONTINUATION to info_collection (proceed signal, NOT emotional support)
+- Assistant (info_collection) asks for details, user says "just start the search" → CONTINUATION to info_collection (proceed signal)
+- Assistant (info_collection) asks for details, user says "no more questions, just search with what you have" → CONTINUATION to info_collection
 - Assistant (domain_expert) provides Medicaid checklist, user asks follow-up "what documents do I need for step 3?" → CONTINUATION (related follow-up)
 - Assistant (deep_search) returned results, user asks "What's the contact info for the first result?" → CONTINUATION (follow-up about results)
 
@@ -1027,6 +1045,18 @@ If the current agent is deep_search and ANY of these apply, set recommended_agen
 - The user explicitly asks to talk to a person, human, or clinical team
 - The user says they want to give up on the current search approach
 Do NOT recommend human_comm for minor clarifications or simple follow-up questions.
+
+## CRITICAL: Do NOT misroute skip/proceed signals as emotional support
+When the current agent is info_collection and the user expresses impatience with questions:
+- "I don't want to answer more questions" → This is a PROCEED signal, NOT emotional distress.
+  Route as CONTINUATION to info_collection.
+- "stop asking me things" → Impatience with the process, NOT an emotional crisis.
+  Route as CONTINUATION to info_collection.
+- "just do it" / "just search" → Command to proceed. CONTINUATION to info_collection.
+
+Only route to front_end_emotional_support when the user expresses genuine emotional distress
+about their CAREGIVING SITUATION (sadness, anxiety, burnout, overwhelm about caring for
+someone), NOT when they're expressing frustration with the question-asking process itself.
 
 ## Output Format (JSON):
 {{
