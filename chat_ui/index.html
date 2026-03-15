@@ -448,6 +448,14 @@ async function sendMessage() {
     conversationId = data.conversation_id;
     convIdEl.textContent = conversationId.substring(0, 8) + '...';
 
+    // Render recent history on first message (e.g., onboarding greeting)
+    if (data.recent_history && messages.length <= 1) {
+      for (const msg of data.recent_history) {
+        const uiRole = msg.role === 'user' ? 'user' : 'agent';
+        addMessage(uiRole, msg.content);
+      }
+    }
+
     addMessage('agent', data.reply, data.debug);
   } catch (err) {
     addMessage('agent', `Network error: ${err.message}`);

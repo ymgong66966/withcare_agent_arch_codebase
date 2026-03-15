@@ -187,6 +187,31 @@ async def _write_chat_message(user_id: str, conversation_id: str, role: str, con
         _chat_logger.warning(f"ChatMessages write failed (non-fatal): {e}")
 
 
+async def _get_messages_from_chat_messages(user_id: str, limit: int = 50) -> list:
+    """Read recent messages from ChatMessages table (keyed by user_Id)."""
+    table = get_table(CHAT_MESSAGES_TABLE)
+    if table is None:
+        return []
+    try:
+        from boto3.dynamodb.conditions import Key
+        result = table.query(
+            KeyConditionExpression=Key("user_Id").eq(user_id),
+            ScanIndexForward=False,
+            Limit=limit,
+        )
+        items = result.get("Items", [])
+        # Reverse to chronological order (query was newest-first)
+        items.reverse()
+        return [
+            {"role": item.get("role", "user"), "content": item.get("text", "")}
+            for item in items
+            if item.get("role") in ("user", "assistant", "human") and item.get("text")
+        ]
+    except Exception as e:
+        _chat_logger.warning(f"Failed to read from ChatMessages: {e}")
+        return []
+
+
 def _last_assistant_message(state: UnifiedState) -> str:
     for m in reversed(state.messages):
         if m.role == "assistant":
@@ -264,33 +289,50 @@ def _rebuild_request_manager(
 async def _restore_state(state: UnifiedState, conv_id: str) -> None:
     """Restore full state from DDB: messages, checkpoint, and requests.
 
-    If the given conv_id has no data (e.g., new browser session after pod
-    restart), falls back to the user's most recent conversation so that
-    prior messages, checkpoints, and request references are not lost.
+    Messages are restored from ChatMessages (keyed by user_Id) so all
+    history is available regardless of conversation_id.  Falls back to
+    WithCare_UserConversationTable if ChatMessages is empty.
+
+    Checkpoint and requests still come from UserConversationTable
+    (keyed by conversation_id).
     """
     conv_store = get_conversation_store()
     restore_conv_id = conv_id
 
-    # 1. Restore messages (scoped by user_id to prevent cross-user leaks)
-    previous_msgs = await conv_store.get_messages_for_conversation(
-        restore_conv_id, user_id=state.meta.user_id,
-    )
-
-    # Fallback: if no messages found for this conv_id, look up the user's
-    # most recent conversation and restore from that instead.
-    if not previous_msgs and state.meta.user_id:
-        latest_conv_id = await conv_store.get_latest_conversation_id_for_user(
-            state.meta.user_id,
-        )
-        if latest_conv_id and latest_conv_id != conv_id:
+    # 1. Restore messages from ChatMessages (keyed by user_id — no conv_id needed)
+    previous_msgs = []
+    if state.meta.user_id:
+        chat_msg_items = await _get_messages_from_chat_messages(state.meta.user_id)
+        if chat_msg_items:
+            previous_msgs = chat_msg_items
             _chat_logger.info(
-                f"No data for conv {conv_id[:8]}, falling back to user's "
-                f"latest conversation {latest_conv_id[:8]}"
+                f"Restored {len(chat_msg_items)} messages from ChatMessages for user {state.meta.user_id}"
             )
-            restore_conv_id = latest_conv_id
-            previous_msgs = await conv_store.get_messages_for_conversation(
-                restore_conv_id, user_id=state.meta.user_id,
+
+    # Fallback: if ChatMessages empty, try UserConversationTable
+    if not previous_msgs:
+        conv_msgs = await conv_store.get_messages_for_conversation(
+            restore_conv_id, user_id=state.meta.user_id,
+        )
+        if not conv_msgs and state.meta.user_id:
+            latest_conv_id = await conv_store.get_latest_conversation_id_for_user(
+                state.meta.user_id,
             )
+            if latest_conv_id and latest_conv_id != conv_id:
+                _chat_logger.info(
+                    f"No data for conv {conv_id[:8]}, falling back to user's "
+                    f"latest conversation {latest_conv_id[:8]}"
+                )
+                restore_conv_id = latest_conv_id
+                conv_msgs = await conv_store.get_messages_for_conversation(
+                    restore_conv_id, user_id=state.meta.user_id,
+                )
+        if conv_msgs:
+            previous_msgs = conv_msgs
+            _chat_logger.info(
+                f"Restored {len(conv_msgs)} messages from UserConversationTable for conv {restore_conv_id[:8]}"
+            )
+
     if previous_msgs:
         restored = []
         for msg in previous_msgs:
@@ -300,9 +342,6 @@ async def _restore_state(state: UnifiedState, conv_id: str) -> None:
                 restored.append(ChatMessage(role=role, content=content))
         if restored:
             state.messages = restored
-            _chat_logger.info(
-                f"Restored {len(restored)} messages from DDB for conv {conv_id[:8]}"
-            )
 
     # 2. Restore checkpoint (routing + request manager metadata)
     #    Verify the checkpoint belongs to the requesting user before applying.
@@ -514,7 +553,8 @@ async def chat(req: ChatRequest):
     uid = req.user_id or f"anon-{conv_id[:12]}"
     key = _conv_key(uid, conv_id)
 
-    if key not in _conversations:
+    is_new_session = key not in _conversations
+    if is_new_session:
         state = _init_state(conv_id, user_id=uid)
 
         # Restore full state from DDB (messages + checkpoint + requests)
@@ -572,7 +612,7 @@ async def chat(req: ChatRequest):
             },
         }
 
-    return {
+    response = {
         "reply": _last_assistant_message(state),
         "conversation_id": conv_id,
         "debug": {
@@ -588,6 +628,18 @@ async def chat(req: ChatRequest):
             "logs": log_capture.records,
         },
     }
+
+    # On first message of a new session, include recent history so the UI
+    # can render prior messages (e.g., onboarding greeting).
+    if is_new_session and uid:
+        try:
+            recent = await _get_messages_from_chat_messages(uid, limit=3)
+            if recent:
+                response["recent_history"] = recent
+        except Exception as e:
+            _chat_logger.warning(f"Failed to fetch recent history for UI: {e}")
+
+    return response
 
 
 @app.post("/external/send")
