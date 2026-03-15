@@ -554,6 +554,7 @@ async def chat(req: ChatRequest):
     key = _conv_key(uid, conv_id)
 
     is_new_session = key not in _conversations
+    pre_turn_history = None
     if is_new_session:
         state = _init_state(conv_id, user_id=uid)
 
@@ -562,6 +563,13 @@ async def chat(req: ChatRequest):
             await _restore_state(state, conv_id)
         except Exception as e:
             _chat_logger.warning(f"Failed to restore state from DDB: {e}")
+
+        # Snapshot history BEFORE the turn runs (so it doesn't include current turn)
+        if uid:
+            try:
+                pre_turn_history = await _get_messages_from_chat_messages(uid, limit=3)
+            except Exception as e:
+                _chat_logger.warning(f"Failed to fetch pre-turn history: {e}")
 
         _conversations[key] = state
 
@@ -629,15 +637,10 @@ async def chat(req: ChatRequest):
         },
     }
 
-    # On first message of a new session, include recent history so the UI
+    # On first message of a new session, include pre-turn history so the UI
     # can render prior messages (e.g., onboarding greeting).
-    if is_new_session and uid:
-        try:
-            recent = await _get_messages_from_chat_messages(uid, limit=3)
-            if recent:
-                response["recent_history"] = recent
-        except Exception as e:
-            _chat_logger.warning(f"Failed to fetch recent history for UI: {e}")
+    if pre_turn_history:
+        response["recent_history"] = pre_turn_history
 
     return response
 

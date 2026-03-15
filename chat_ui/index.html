@@ -448,12 +448,18 @@ async function sendMessage() {
     conversationId = data.conversation_id;
     convIdEl.textContent = conversationId.substring(0, 8) + '...';
 
-    // Render recent history on first message (e.g., onboarding greeting)
+    // Render recent history BEFORE current exchange (e.g., onboarding greeting)
     if (data.recent_history && messages.length <= 1) {
+      // Clear the user message we already rendered, re-render with history first
+      container.innerHTML = '';
+      emptyState.style.display = 'none';
+      messages = [];
       for (const msg of data.recent_history) {
         const uiRole = msg.role === 'user' ? 'user' : 'agent';
         addMessage(uiRole, msg.content);
       }
+      // Re-add the user's current message
+      addMessage('user', text);
     }
 
     addMessage('agent', data.reply, data.debug);
