@@ -2524,6 +2524,7 @@ async def user_info_node(state: Dict[str, Any]) -> Dict[str, Any]:
             from fact_store import get_fact_store as _get_fs_info
             _fs_info = _get_fs_info()
             _known_eids = await _fs_info.get_user_entities(user_id) if user_id else []
+            _logger.info(f"user_info: known entities for {user_id}: {_known_eids}")
             # Fetch key metadata for each entity so the LLM can make informed decisions
             for _eid in _known_eids:
                 try:
@@ -2540,10 +2541,11 @@ async def user_info_node(state: Dict[str, Any]) -> Dict[str, Any]:
                             _meta["isSelf"] = str(f.fact_value).lower() in ("true", "1", "yes")
                     if _meta:
                         _entity_meta[_eid] = _meta
-                except Exception:
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    _logger.warning(f"user_info: failed to fetch metadata for {_eid}: {e}")
+            _logger.info(f"user_info: entity metadata: {_entity_meta}")
+        except Exception as e:
+            _logger.warning(f"user_info: failed to get known entities: {e}")
         try:
             from prompts import _infer_subject_entity
             entity_id = await _infer_subject_entity(
@@ -2551,8 +2553,9 @@ async def user_info_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 known_entity_ids=_known_eids,
                 entity_metadata=_entity_meta,
             )
+            _logger.info(f"user_info: inferred entity_id={entity_id!r}")
         except Exception as e:
-            _logger.debug(f"user_info: entity inference failed: {e}")
+            _logger.warning(f"user_info: entity inference failed: {e}")
 
     if not entity_id or entity_id == "care_recipient:unknown":
         entity_id = req.get("subject_entity_id") or ""
@@ -2630,13 +2633,17 @@ async def user_info_node(state: Dict[str, Any]) -> Dict[str, Any]:
             previous_summary = ""
             for query_round in range(3):
                 # Step A: Generate query plan
+                # Pass ALL known entities with metadata so the planner can
+                # resolve entities intelligently (including isSelf users)
+                _planner_eids = _known_eids if _known_eids else ([entity_id] if entity_id else [])
                 plan = await call_memory_tool(
                     mgr=MCP_MGR, server=MEMORY_SERVER,
                     tool_name="memory_query_planner",
                     arguments={
                         "user_question": user_text,
                         "user_id": user_id,
-                        "known_entity_ids": [entity_id] if entity_id else [],
+                        "known_entity_ids": _planner_eids,
+                        "entity_metadata": _entity_meta if _entity_meta else None,
                         "previous_results_summary": previous_summary,
                     },
                     timeout_ms=5000,
