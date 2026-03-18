@@ -625,75 +625,84 @@ async def _infer_subject_entity(
     user_request: str,
     client: Any = None,
     known_entity_ids: Optional[List[str]] = None,
+    entity_metadata: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> str:
     """
-    Best-effort inference for subject_entity_id when LLM omits it.
+    LLM-driven inference for subject_entity_id.
 
-    Uses known entities from DDB (if provided) to match against user text,
-    then falls back to keyword matching and LLM inference.
+    Args:
+        user_request: The user's message text.
+        client: TrackedAnthropicClient for LLM calls.
+        known_entity_ids: Entity IDs from the user's fact store.
+        entity_metadata: Optional dict of {entity_id: {name, relationship, isSelf, ...}}
+            providing context so the LLM can make informed decisions.
     """
-    text = user_request.lower()
+    if not client:
+        return "care_recipient:unknown"
 
-    # ── Phase 0: Match against known DDB entities ──
-    # This catches cases like "uncle", "aunt", etc. that aren't in
-    # the hardcoded keyword list but exist in the user's fact store.
-    if known_entity_ids:
-        for eid in known_entity_ids:
-            label = eid.split(":")[-1] if ":" in eid else eid
-            if label.lower() != "unknown" and label.lower() in text:
-                logger.info(f"Entity inferred from DDB: '{eid}' (matched '{label}' in text)")
-                return eid
+    # Build entity descriptions from metadata + known IDs
+    default_entities = [
+        "care_recipient:mom", "care_recipient:dad",
+        "care_recipient:spouse", "care_recipient:grandparent",
+        "user:self",
+    ]
+    all_options = list(dict.fromkeys(
+        (known_entity_ids or []) + default_entities + ["care_recipient:unknown"]
+    ))
 
-    # ── Phase 1: Keyword matching ──
-    if "grandma" in text or "grandmother" in text or "grandpa" in text or "grandfather" in text:
-        return "care_recipient:grandparent"
-    if "my mom" in text or "mother" in text:
-        return "care_recipient:mom"
-    if "my dad" in text or "father" in text:
-        return "care_recipient:dad"
-    if "my spouse" in text or "husband" in text or "wife" in text:
-        return "care_recipient:spouse"
-    if "myself" in text or "my own" in text or " me " in text:
-        return "user:self"
+    # Build rich descriptions for each known entity
+    entity_lines = []
+    meta = entity_metadata or {}
+    for eid in all_options:
+        info = meta.get(eid, {})
+        name = info.get("name", "")
+        relationship = info.get("relationship", "")
+        is_self = info.get("isSelf", False)
 
-    # Chinese keywords
-    if any(kw in text for kw in ["我妈", "母亲", "妈妈", "我娘", "老母亲", "我老妈"]):
-        return "care_recipient:mom"
-    if any(kw in text for kw in ["我爸", "父亲", "爸爸", "我爹", "老父亲", "我老爸"]):
-        return "care_recipient:dad"
-    if any(kw in text for kw in ["老公", "老婆", "配偶", "丈夫", "妻子", "爱人", "先生", "太太"]):
-        return "care_recipient:spouse"
-    if any(kw in text for kw in ["奶奶", "外婆", "爷爷", "外公", "姥姥", "姥爷", "祖母", "祖父"]):
-        return "care_recipient:grandparent"
+        desc = f"- {eid}"
+        if name or relationship or is_self:
+            details = []
+            if name:
+                details.append(f"name: {name}")
+            if relationship:
+                details.append(f"relationship: {relationship}")
+            if is_self:
+                details.append("NOTE: this person IS the user themselves (isSelf=true, they are managing care for themselves)")
+            desc += f"  ({', '.join(details)})"
+        entity_lines.append(desc)
 
-    # ── Phase 2: LLM fallback with known entities ──
-    if client:
-        try:
-            # Build entity options from known DDB entities + defaults
-            default_entities = [
-                "care_recipient:mom", "care_recipient:dad",
-                "care_recipient:spouse", "care_recipient:grandparent",
-                "user:self",
-            ]
-            all_options = list(dict.fromkeys(
-                (known_entity_ids or []) + default_entities + ["care_recipient:unknown"]
-            ))
-            options_block = "\n".join(f"- {e}" for e in all_options)
+    options_block = "\n".join(entity_lines)
 
-            llm_prompt = (
-                "You are a subject-entity extractor for a caregiver assistant.\n"
-                "Given the user's request, determine WHO the request is about.\n\n"
-                f"User request: \"{user_request}\"\n\n"
-                "Respond with EXACTLY ONE of these identifiers:\n"
-                f"{options_block}\n\n"
-                "Output ONLY the identifier, nothing else."
-            )
-            response = await client.async_chat(prompt=llm_prompt, max_tokens=30, temperature=0.0)
-            result = response.strip().lower()
-            if result in set(all_options):
-                return result
-        except Exception as e:
-            logger.warning(f"LLM entity inference fallback failed: {e}")
+    llm_prompt = (
+        "You are a subject-entity resolver for a caregiver assistant.\n"
+        "Given the user's message, determine WHO it is about.\n\n"
+        f"User message: \"{user_request}\"\n\n"
+        "Available entities (with stored information about each):\n"
+        f"{options_block}\n\n"
+        "Important:\n"
+        "- If an entity has isSelf=true, that means the USER is the care recipient.\n"
+        "  When the user says 'me', 'my care', 'about me', 'my situation' — return that entity.\n"
+        "- 'user:self' refers to the user as a CAREGIVER (their burnout, stress, etc.).\n"
+        "- 'care_recipient:*' refers to the person RECEIVING care.\n"
+        "- If the user asks about 'my dad' and there's a care_recipient:dad, return that.\n"
+        "- If unsure, return care_recipient:unknown.\n\n"
+        "Respond with EXACTLY ONE entity identifier from the list above, nothing else."
+    )
+
+    try:
+        response = await client.async_chat(prompt=llm_prompt, max_tokens=50, temperature=0.0)
+        result = response.strip().lower()
+        # Accept the result if it's in our options (exact or close match)
+        if result in set(all_options):
+            logger.info(f"Entity inferred by LLM: '{result}'")
+            return result
+        # Try to find a partial match (LLM may add quotes or extra text)
+        for opt in all_options:
+            if opt in result:
+                logger.info(f"Entity inferred by LLM (partial match): '{opt}'")
+                return opt
+    except Exception as e:
+        logger.warning(f"LLM entity inference failed: {e}")
 
     return "care_recipient:unknown"
 

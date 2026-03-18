@@ -2518,15 +2518,39 @@ async def user_info_node(state: Dict[str, Any]) -> Dict[str, Any]:
     # ── Resolve entity from user text (not just from the active request) ──
     entity_id = ""
     if user_text:
+        _known_eids = []
+        _entity_meta = {}
         try:
             from fact_store import get_fact_store as _get_fs_info
             _fs_info = _get_fs_info()
             _known_eids = await _fs_info.get_user_entities(user_id) if user_id else []
+            # Fetch key metadata for each entity so the LLM can make informed decisions
+            for _eid in _known_eids:
+                try:
+                    _facts = await _fs_info.get_active_facts(user_id, _eid, [
+                        "identity.full_name", "identity.relationship_to_user", "onboarding.raw_isself",
+                    ])
+                    _meta = {}
+                    for f in _facts:
+                        if f.fact_key == "identity.full_name":
+                            _meta["name"] = f.fact_value
+                        elif f.fact_key == "identity.relationship_to_user":
+                            _meta["relationship"] = f.fact_value
+                        elif f.fact_key == "onboarding.raw_isself":
+                            _meta["isSelf"] = str(f.fact_value).lower() in ("true", "1", "yes")
+                    if _meta:
+                        _entity_meta[_eid] = _meta
+                except Exception:
+                    pass
         except Exception:
-            _known_eids = []
+            pass
         try:
             from prompts import _infer_subject_entity
-            entity_id = await _infer_subject_entity(user_text, client=client, known_entity_ids=_known_eids)
+            entity_id = await _infer_subject_entity(
+                user_text, client=client,
+                known_entity_ids=_known_eids,
+                entity_metadata=_entity_meta,
+            )
         except Exception as e:
             _logger.debug(f"user_info: entity inference failed: {e}")
 
@@ -2538,9 +2562,14 @@ async def user_info_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
     if user_id and entity_id:
         try:
+            # Pass the inferred entity_id so get_context_bundle knows which
+            # entity to query, even when there's no active request.
+            _req_with_entity = dict(req) if req else {}
+            if entity_id and not _req_with_entity.get("subject_entity_id"):
+                _req_with_entity["subject_entity_id"] = entity_id
             bundle = await get_context_bundle(
                 user_id=user_id,
-                request_dict=req,
+                request_dict=_req_with_entity,
                 message=user_text,
                 k=10,
             )
