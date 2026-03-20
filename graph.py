@@ -3168,6 +3168,44 @@ async def quick_answer_node(state: Dict[str, Any]) -> Dict[str, Any]:
                 "Sorry, I'm unable to answer that question right now. Please try again later or rephrase your question.",
             )
 
+    elif action == "company_info":
+        # Fetch WithCare company knowledge from MCP tool
+        search_context = "(Company information unavailable)"
+        try:
+            tool_patch = await call_mcp_tool_patch(
+                mgr=MCP_MGR,
+                server=SEARCH_SERVER,  # same remote MCP server hosts all tools
+                tool_name="get_withcare_info",
+                arguments={"query": user_text},
+                purpose="Quick answer: WithCare company/product question",
+                timeout_s=10,
+            )
+            for tr in (tool_patch.get("tools") or {}).get("tool_runs", []):
+                tool_runs.append(tr)
+            company_data = (tool_patch.get("_mcp_result") or {}).get("data") or {}
+            if isinstance(company_data, dict) and company_data.get("content"):
+                search_context = f"## WithCare Company Information (authoritative source)\n{company_data['content']}"
+            elif isinstance(company_data, str) and company_data:
+                search_context = f"## WithCare Company Information (authoritative source)\n{company_data}"
+        except Exception as e:
+            _deep_search_logger.warning(f"Company info MCP call failed: {e}")
+
+        try:
+            answer = await _search_llm.async_chat(
+                QUICK_ANSWER_PROMPT.format(
+                    search_context=search_context,
+                    question_context=question_context,
+                ),
+                max_tokens=1000,
+            )
+        except Exception as e:
+            _deep_search_logger.error(f"quick_answer LLM call failed: {e}")
+            answer = _msg(
+                state,
+                "抱歉，我暂时无法回答这个问题。请稍后再试，或者你可以换一种方式提问。",
+                "Sorry, I'm unable to answer that question right now. Please try again later or rephrase your question.",
+            )
+
     else:  # direct_answer (default)
         try:
             answer = await _search_llm.async_chat(

@@ -209,12 +209,44 @@ Choose ONE action:
   Examples: "I need help with care", "What should I do?",
   "Tell me about options", "I'm not sure what to do about my mom"
 
+- **"company_info"**: The question is about the **WithCare platform, app, or company**
+  itself — NOT about caregiving as a general topic.
+
+  WithCare is the name of this caregiving app/platform. Questions about the PRODUCT
+  (how the app works, account issues, app features, care circles, the Navigator,
+  privacy/security, pricing, the company, contact support, feedback) → company_info.
+
+  IMPORTANT DISAMBIGUATION: The word "care" appears in many caregiving questions
+  that are NOT about the WithCare product. You must distinguish:
+  - "What is WithCare?" → company_info (asking about the product)
+  - "What care options are available?" → NOT company_info (asking about caregiving)
+  - "How do I use the care circle?" → company_info (care circle is a WithCare feature)
+  - "How do I care for my mom?" → NOT company_info (general caregiving question)
+  - "Is my data safe?" → company_info (asking about the platform's data security)
+  - "Is home care safe?" → NOT company_info (asking about caregiving safety)
+  - "How do I contact support?" → company_info (asking about WithCare support)
+  - "How do I find a support group?" → NOT company_info (asking about caregiver resources)
+  - "What does the Navigator do?" → company_info (Navigator is a WithCare feature)
+  - "What should I do as a caregiver?" → NOT company_info (general advice)
+  - "How do I reset my password?" → company_info (account management)
+  - "Can I invite family to help?" → company_info (care circle feature)
+  - "Who founded WithCare?" → company_info (company information)
+
+  Topics that ARE company_info: app features, account/login, care circle management,
+  Navigator capabilities, privacy/HIPAA/data, pricing, device support, company
+  mission/team, contacting WithCare support, giving feedback, deleting account.
+
+  Topics that are NOT company_info: medical advice, finding caregivers/providers,
+  insurance (Medicare/Medicaid), legal documents, emotional support, general
+  caregiving how-to questions.
+
 ## Output format
 Respond with ONLY a JSON object (no markdown fences):
 
 {{"action": "direct_answer"}}
 {{"action": "web_search", "query": "<optimized search query>"}}
 {{"action": "follow_up"}}
+{{"action": "company_info"}}
 """
 
 # ---------------------------------------------------------------------------
