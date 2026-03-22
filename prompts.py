@@ -1048,12 +1048,36 @@ During info collection (status = "collecting"):
 - Assistant (domain_expert) provides Medicaid checklist, user asks follow-up "what documents do I need for step 3?" → CONTINUATION (related follow-up)
 - Assistant (deep_search) returned results, user asks "What's the contact info for the first result?" → CONTINUATION (follow-up about results)
 
-## Escalation Detection
-If the current agent is deep_search and ANY of these apply, set recommended_agent to "human_comm":
-- The user expresses frustration, dissatisfaction, or says the results are wrong/unhelpful
-- The user explicitly asks to talk to a person, human, or clinical team
-- The user says they want to give up on the current search approach
-Do NOT recommend human_comm for minor clarifications or simple follow-up questions.
+## Escalation to Human Support (human_comm)
+Route to human_comm ONLY in these specific situations — from ANY agent:
+
+1. **Real-world actions the AI cannot perform**: The user asks for something that requires
+   a human to take action in the physical world. Examples:
+   - Making phone calls on the user's behalf ("can you call my insurance?")
+   - Scheduling real appointments ("book a visit with the doctor for Tuesday")
+   - Submitting paperwork or applications ("file this form for me")
+   - Physically visiting a location or picking something up
+   - Contacting a specific person or organization on the user's behalf
+   These requests MUST go to human_comm so a real person can follow up.
+
+2. **User explicitly requests human help**: The user directly asks to speak with
+   a person, human agent, or clinical team member.
+
+3. **Deep search frustration**: The current agent is deep_search AND the user
+   expresses clear frustration or dissatisfaction with the search results
+   ("these results are useless", "this isn't what I need at all").
+
+Do NOT route to human_comm for:
+- General caregiving questions (even complex ones) — use other agents
+- Topic switches or "never mind" — that's just the user changing focus, not escalation
+- Vague dissatisfaction without clear frustration — try follow-up questions first
+- Anything the AI CAN answer: factual questions, searches, guidance, care plans
+
+CRITICAL: No agent should ever improvise a "I'll coordinate with our clinical team"
+or "a team member will follow up" response on its own. ONLY the human_comm node
+actually sends messages to the support team via Slack. If any other agent says
+"clinical team", it creates a broken promise — the user expects follow-up but
+nothing actually happens. If the request needs a human, route to human_comm.
 
 ## Human Support Reply Detection
 Check the recent conversation for messages with role "human" (from clinical support team).

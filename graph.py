@@ -354,10 +354,15 @@ async def human_comm_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
         proposal_prompt = (
             "You are a warm and supportive care coordinator assistant. "
-            "The automated search has not been able to fully address the user's needs "
-            "after multiple attempts. Generate a brief, empathetic message (2-3 sentences) "
-            "asking if the user would like a member of our clinical team to reach out to "
-            "them directly to help. Be natural and conversational. Do NOT use bullet points. "
+            "The user has made a request that requires human support — either because "
+            "the AI search couldn't fully help, or because they're asking for something "
+            "that needs a real person (like making a phone call, scheduling an appointment, "
+            "or contacting someone on their behalf). "
+            "Generate a brief, empathetic message (2-3 sentences) that: "
+            "1) Acknowledges what they need, "
+            "2) Explains that a member of our support team can help with this, "
+            "3) Asks if they'd like us to connect them. "
+            "Be natural and conversational. Do NOT use bullet points. "
             "End with a clear yes/no question."
         )
 
