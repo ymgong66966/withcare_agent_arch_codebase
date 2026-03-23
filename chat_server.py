@@ -377,8 +377,12 @@ async def _restore_state(state: UnifiedState, conv_id: str) -> None:
                 )
 
 
-async def _run_turn(graph, state: UnifiedState, user_message: str):
-    """Run one conversation turn.  Returns (state, debug_info)."""
+async def _run_turn(graph, state: UnifiedState, user_message: str, skip_persistence: bool = False):
+    """Run one conversation turn.  Returns (state, debug_info).
+
+    If skip_persistence=True, skips writing messages to DDB (used when
+    the caller already handles persistence, e.g., /external/send via Lambda).
+    """
     debug: Dict[str, Any] = {"nodes": [], "node_outputs": {}}
 
     # Create Langfuse trace for this turn
@@ -399,25 +403,25 @@ async def _run_turn(graph, state: UnifiedState, user_message: str):
     state = _consume_ddb_writes(state)
     state = _cleanup_transient(state)
 
-    # Persist user message (fire-and-forget)
-    try:
-        conv_store = get_conversation_store()
-        await conv_store.write_message(
+    # Persist user message (fire-and-forget) — skip if caller handles persistence
+    if not skip_persistence:
+        try:
+            conv_store = get_conversation_store()
+            await conv_store.write_message(
+                user_id=state.meta.user_id,
+                conversation_id=state.meta.conversation_id,
+                role="user",
+                content=user_message,
+            )
+        except Exception as e:
+            _chat_logger.warning(f"Failed to persist user message: {e}")
+
+        await _write_chat_message(
             user_id=state.meta.user_id,
             conversation_id=state.meta.conversation_id,
             role="user",
             content=user_message,
         )
-    except Exception as e:
-        _chat_logger.warning(f"Failed to persist user message: {e}")
-
-    # Dual-write user message to ChatMessages (fire-and-forget)
-    await _write_chat_message(
-        user_id=state.meta.user_id,
-        conversation_id=state.meta.conversation_id,
-        role="user",
-        content=user_message,
-    )
 
     state_dict = _strip_decimals(state.model_dump())
     if _lf_trace:
@@ -469,28 +473,28 @@ async def _run_turn(graph, state: UnifiedState, user_message: str):
         state = apply_node_output(state, prereq_patch)
         state = _consume_ddb_writes(state)
 
-    # Persist assistant reply (fire-and-forget)
+    # Persist assistant reply (fire-and-forget) — skip if caller handles persistence
     assistant_reply = _last_assistant_message(state)
-    try:
+    if not skip_persistence:
+        try:
+            if assistant_reply:
+                conv_store = get_conversation_store()
+                await conv_store.write_message(
+                    user_id=state.meta.user_id,
+                    conversation_id=state.meta.conversation_id,
+                    role="assistant",
+                    content=assistant_reply,
+                )
+        except Exception as e:
+            _chat_logger.warning(f"Failed to persist assistant message: {e}")
+
         if assistant_reply:
-            conv_store = get_conversation_store()
-            await conv_store.write_message(
+            await _write_chat_message(
                 user_id=state.meta.user_id,
                 conversation_id=state.meta.conversation_id,
                 role="assistant",
                 content=assistant_reply,
             )
-    except Exception as e:
-        _chat_logger.warning(f"Failed to persist assistant message: {e}")
-
-    # Dual-write assistant reply to ChatMessages (fire-and-forget)
-    if assistant_reply:
-        await _write_chat_message(
-            user_id=state.meta.user_id,
-            conversation_id=state.meta.conversation_id,
-            role="assistant",
-            content=assistant_reply,
-        )
 
     # Persist checkpoint (fire-and-forget)
     try:
@@ -682,7 +686,7 @@ async def external_send(req: ExternalSendRequest):
     graph = _get_graph()
 
     try:
-        state, debug = await _run_turn(graph, state, user_text)
+        state, debug = await _run_turn(graph, state, user_text, skip_persistence=True)
     except Exception as exc:
         tb = traceback.format_exc()
         _chat_logger.error(f"[external/send] ERROR: {exc}\n{tb}")
