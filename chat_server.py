@@ -260,6 +260,7 @@ def _rebuild_request_manager(
 ) -> None:
     """Rebuild state.request_manager.requests from DDB items."""
     for rid, item in raw_items.items():
+        item = _strip_decimals(item)
         payload = item.get("payload", {})
         if not payload:
             payload = {
@@ -347,6 +348,7 @@ async def _restore_state(state: UnifiedState, conv_id: str) -> None:
     #    Verify the checkpoint belongs to the requesting user before applying.
     checkpoint = await conv_store.get_checkpoint(restore_conv_id)
     if checkpoint:
+        checkpoint = _strip_decimals(checkpoint)
         checkpoint_owner = checkpoint.get("user_id", "")
         requesting_user = state.meta.user_id
         if checkpoint_owner and requesting_user and checkpoint_owner != requesting_user:
