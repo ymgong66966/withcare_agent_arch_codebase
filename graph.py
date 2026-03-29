@@ -354,15 +354,16 @@ async def human_comm_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
         proposal_prompt = (
             "You are a warm and supportive care coordinator assistant. "
-            "The user has made a request that requires human support — either because "
-            "the AI search couldn't fully help, or because they're asking for something "
-            "that needs a real person (like making a phone call, scheduling an appointment, "
-            "or contacting someone on their behalf). "
-            "Generate a brief, empathetic message (2-3 sentences) that: "
-            "1) Acknowledges what they need, "
-            "2) Explains that a member of our support team can help with this, "
-            "3) Asks if they'd like us to connect them. "
-            "Be natural and conversational. Do NOT use bullet points. "
+            "Look at the recent conversation — the AI assistant may have just told the user "
+            "it cannot do something they need (like making a call, scheduling an appointment, "
+            "contacting someone, or another real-world action). Your job is to: "
+            "1) Briefly acknowledge what the user needs in your own words — condense the "
+            "reason the AI couldn't help into a short phrase, "
+            "2) Explain that our human support team CAN help with this specific thing, "
+            "3) Ask if they'd like to be connected. "
+            "Be natural and conversational. 2-3 sentences max. "
+            "Do NOT repeat the AI's explanation verbatim — condense it. "
+            "Do NOT use bullet points. "
             "End with a clear yes/no question."
         )
 
@@ -3467,7 +3468,53 @@ def task_complete_node(state: Dict[str, Any]) -> Dict[str, Any]:
     return result_patch
 
 
-def downstream_catcher(state: Dict[str, Any]) -> Dict[str, Any]:
+async def _check_agent_limitation(assistant_text: str, state: Dict[str, Any]) -> bool:
+    """LLM-based check: does the assistant's response indicate a limitation
+    where human support could help?
+
+    Returns True if the response says the AI cannot fulfill the user's request
+    (e.g., making phone calls, scheduling appointments, contacting people).
+    Returns False for normal helpful answers, follow-up questions, or search results.
+    """
+    meta = state.get("meta") or {}
+    client = TrackedAnthropicClient(
+        session_id=meta.get("conversation_id", ""),
+        agent_role="downstream_catcher",
+        user_id=meta.get("user_id", ""),
+    )
+
+    prompt = (
+        "You are analyzing an AI assistant's response to determine if it indicates "
+        "a LIMITATION — meaning the assistant cannot fulfill what the user asked for.\n\n"
+        f"Assistant's response:\n\"{assistant_text[:500]}\"\n\n"
+        "A limitation response is one where the assistant says it CANNOT do something "
+        "the user requested — like making phone calls, scheduling appointments, contacting "
+        "people, submitting forms, picking up prescriptions, or any real-world action that "
+        "requires a human to perform.\n\n"
+        "A limitation response is NOT:\n"
+        "- A normal helpful answer (even if partial or imperfect)\n"
+        "- A follow-up question asking for more details\n"
+        "- Search results (even if not ideal)\n"
+        "- A suggestion to try a different approach\n"
+        "- An informational response about a topic\n"
+        "- The assistant offering alternative steps the user can take themselves\n\n"
+        "Does this response indicate a limitation where a HUMAN SUPPORT TEAM could "
+        "step in and actually do the thing the user needs?\n\n"
+        "Respond with ONLY \"yes\" or \"no\"."
+    )
+
+    try:
+        response = await client.async_chat(prompt=prompt, max_tokens=5, temperature=0.0)
+        result = response.strip().lower().startswith("yes")
+        if result:
+            _logger.info(f"[downstream_catcher] Detected agent limitation in response")
+        return result
+    except Exception as e:
+        _logger.debug(f"[downstream_catcher] Limitation check failed (defaulting to no): {e}")
+        return False
+
+
+async def downstream_catcher(state: Dict[str, Any]) -> Dict[str, Any]:
     import logging
     _routing_dbg = state.get("routing") or {}
     _ph_dbg = _routing_dbg.get("pending_handoff") or {}
@@ -3485,6 +3532,26 @@ def downstream_catcher(state: Dict[str, Any]) -> Dict[str, Any]:
 
     pending = ((state.get("routing") or {}).get("pending_handoff") or {})
     nxt = pending.get("recommended_next_agent")
+
+    # ── Check for agent limitation when no explicit handoff is pending ──
+    if not nxt:
+        messages = state.get("messages") or []
+        last_assistant = ""
+        for m in reversed(messages):
+            if m.get("role") == "assistant":
+                last_assistant = m.get("content", "")
+                break
+
+        if last_assistant:
+            is_limitation = await _check_agent_limitation(last_assistant, state)
+            if is_limitation:
+                return {
+                    "routing": {
+                        "pending_handoff": {"recommended_next_agent": None, "reason": ""},
+                        "_catcher_next": "human_comm",
+                    },
+                }
+
     if nxt:
         # Consume the pending_handoff: save the decision in _catcher_next, then clear pending_handoff
         return {
