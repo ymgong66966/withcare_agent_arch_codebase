@@ -3545,11 +3545,19 @@ async def downstream_catcher(state: Dict[str, Any]) -> Dict[str, Any]:
         if last_assistant:
             is_limitation = await _check_agent_limitation(last_assistant, state)
             if is_limitation:
+                # Remove the agent's "can't do" message so only human_comm's
+                # proposal gets delivered to the user (prevents double-texting)
+                cleaned_messages = list(messages)
+                for i in range(len(cleaned_messages) - 1, -1, -1):
+                    if cleaned_messages[i].get("role") == "assistant":
+                        cleaned_messages.pop(i)
+                        break
                 return {
                     "routing": {
                         "pending_handoff": {"recommended_next_agent": None, "reason": ""},
                         "_catcher_next": "human_comm",
                     },
+                    "messages": cleaned_messages,
                 }
 
     if nxt:
