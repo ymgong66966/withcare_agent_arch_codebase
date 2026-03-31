@@ -166,6 +166,9 @@ def _cleanup_transient(state: UnifiedState) -> UnifiedState:
 
 async def _write_chat_message(user_id: str, conversation_id: str, role: str, content: str) -> None:
     """Write a single message to the ChatMessages time-series table (fire-and-forget)."""
+    import traceback
+    caller = "".join(traceback.format_stack()[-4:-1])
+    _chat_logger.info(f"[_write_chat_message] CALLED for {role} user={user_id[:12]} content={content[:50]!r} CALLER:\n{caller}")
     table = get_table(CHAT_MESSAGES_TABLE)
     if table is None:
         return
@@ -406,6 +409,7 @@ async def _run_turn(graph, state: UnifiedState, user_message: str, skip_persiste
     state = _cleanup_transient(state)
 
     # Persist user message (fire-and-forget) — skip if caller handles persistence
+    _chat_logger.info(f"[_run_turn] skip_persistence={skip_persistence}")
     if not skip_persistence:
         try:
             conv_store = get_conversation_store()
