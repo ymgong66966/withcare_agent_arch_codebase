@@ -141,6 +141,10 @@ def _consume_ddb_writes(state: UnifiedState) -> UnifiedState:
         try:
             op = write.get("op", "put")
             table_name = write.get("table", USER_REQUEST_TABLE)
+            _chat_logger.info(f"[_consume_ddb_writes] op={op} table={table_name}")
+            if "ChatMessages" in str(table_name) or "chat" in str(table_name).lower():
+                import traceback
+                _chat_logger.warning(f"[_consume_ddb_writes] UNEXPECTED ChatMessages write! item={str(write.get('item', {}))[:200]}\n{''.join(traceback.format_stack()[-4:-1])}")
             if op == "put":
                 table = ddb.Table(table_name)
                 item = _sanitize_ddb_value(write["item"])
