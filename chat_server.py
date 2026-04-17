@@ -36,6 +36,20 @@ def _strip_decimals(obj):
         return [_strip_decimals(v) for v in obj]
     return obj
 
+
+# ── Global Decimal-safe JSON encoder ──────────────────────────────────
+# Monkey-patch json.JSONEncoder.default so ANY json.dumps() call in the
+# process handles Decimal automatically. This catches Decimals that enter
+# during graph execution (e.g., from DDB fact store reads inside nodes).
+_original_json_default = json.JSONEncoder.default
+
+def _decimal_safe_default(self, obj):
+    if isinstance(obj, Decimal):
+        return float(obj)
+    return _original_json_default(self, obj)
+
+json.JSONEncoder.default = _decimal_safe_default
+
 import logging
 
 logging.basicConfig(
