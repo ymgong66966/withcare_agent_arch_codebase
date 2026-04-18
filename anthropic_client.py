@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 class AnthropicClient:
     """Base Anthropic Claude client"""
 
-    def __init__(self, model_id: str = "claude-sonnet-4-20250514", api_key: Optional[str] = None):
+    def __init__(self, model_id: str = "claude-haiku-4-5-20251001", api_key: Optional[str] = None):
         self.model_id = model_id
         self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not self.api_key:
@@ -85,7 +85,7 @@ class TrackedAnthropicClient(AnthropicClient):
         session_id: str = None,
         agent_role: str = None,
         user_id: str = None,
-        model_id: str = "claude-sonnet-4-20250514",
+        model_id: str = "claude-haiku-4-5-20251001",
         api_key: Optional[str] = None,
     ):
         super().__init__(model_id=model_id, api_key=api_key)

@@ -158,7 +158,7 @@ async def _human_comm_llm_reply(
     _bind_trace(client, state)
     try:
         resp = await client.create_message(
-            model="claude-sonnet-4-20250514",
+            model="claude-haiku-4-5-20251001",
             max_tokens=300,
             system=(
                 "You are a warm and supportive care coordinator assistant. "
@@ -374,7 +374,7 @@ async def human_comm_node(state: Dict[str, Any]) -> Dict[str, Any]:
 
         try:
             resp = await client.create_message(
-                model="claude-sonnet-4-20250514",
+                model="claude-haiku-4-5-20251001",
                 max_tokens=300,
                 system=proposal_prompt,
                 messages=[{"role": "user", "content": f"Recent conversation:\n{conversation_context}\n\nGenerate the escalation proposal message."}],

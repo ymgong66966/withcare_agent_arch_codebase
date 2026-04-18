@@ -35,7 +35,7 @@ async def generate_follow_up_questions(chat_turns: list[str]) -> str:
     user_content = "Here is the recent conversation:\n\n" + "\n".join(chat_turns)
 
     response = client.messages.create(
-        model="claude-sonnet-4-20250514",
+        model="claude-haiku-4-5-20251001",
         max_tokens=300,
         system=SYSTEM_PROMPT,
         messages=[{"role": "user", "content": user_content}],
