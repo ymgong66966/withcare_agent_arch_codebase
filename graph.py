@@ -11,6 +11,7 @@ _logger = logging.getLogger(__name__)
 
 from langgraph.graph import StateGraph, END
 
+from progress_signals import emit_progress
 from routing_utils import infer_turn_mode, last_user_text
 from id_utils import new_uuid
 from request_factory import build_request_patch, build_prereq_switch_patch, build_accept_prereq_patch, build_request_update_patch
@@ -281,6 +282,7 @@ async def _build_escalation_messages(state: Dict[str, Any], limit: int = 20) -> 
 
 async def human_comm_node(state: Dict[str, Any]) -> Dict[str, Any]:
     """Human escalation agent node — reply, proposal, and confirmation modes."""
+    emit_progress(state, "human_comm")
     meta = state.get("meta") or {}
     user_id = meta.get("user_id", "")
     conversation_id = meta.get("conversation_id", "")
@@ -632,6 +634,7 @@ def route_from_turn_router(state: Dict[str, Any]) -> RouteKey:
     return "upstream_delegator"
 
 async def front_end_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    emit_progress(state, "front_end")
     meta = state.get("meta") or {}
     conversation_id = meta.get("conversation_id", "conv-unknown")
     user_id = meta.get("user_id", "user-unknown")
@@ -775,6 +778,7 @@ async def upstream_delegator(state: Dict[str, Any]) -> Dict[str, Any]:
 
     This function now uses LLM-based decision making via Claude.
     """
+    emit_progress(state, "upstream_delegator")
     # Extract metadata for client initialization
     meta = state.get("meta") or {}
     user_id = meta.get("user_id", "user-unknown")
@@ -1248,6 +1252,7 @@ async def info_collection_node(state: Dict[str, Any]) -> Dict[str, Any]:
     - LLM assesses readiness to proceed
     - Offers user the option to proceed when info is sufficient but incomplete
     """
+    emit_progress(state, "info_collection")
     meta = state.get("meta") or {}
     conversation_id = meta.get("conversation_id", "conv-unknown")
     user_id = meta.get("user_id", "user-unknown")
@@ -2191,6 +2196,7 @@ def _make_search_llm(state: Dict[str, Any]) -> TrackedAnthropicClient:
 
 
 async def deep_search_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    emit_progress(state, "deep_search")
     rid = _get_active_request_id(state)
     req = _get_active_request(state) or {}
     _search_llm = _make_search_llm(state)
@@ -2506,6 +2512,7 @@ async def user_info_node(state: Dict[str, Any]) -> Dict[str, Any]:
     answers the user's question about them. Can also call follow-up
     question MCP tools for clarification.
     """
+    emit_progress(state, "user_info")
     rid = _get_active_request_id(state)
     req = _get_active_request(state) or {}
     meta = state.get("meta") or {}
@@ -2943,6 +2950,7 @@ was for. If they ask about a specific entity, focus on that entity's requests.
     return result
 
 async def domain_expert_node(state: Dict[str, Any]) -> Dict[str, Any]:
+    emit_progress(state, "domain_expert")
     rid = _get_active_request_id(state)
     req = _get_active_request(state) or {}
     _search_llm = _make_search_llm(state)
@@ -3051,6 +3059,7 @@ async def quick_answer_node(state: Dict[str, Any]) -> Dict[str, Any]:
     Does NOT create a request or produce artifacts — just answers directly.
     Uses an LLM decision call to route: direct answer, web search, or follow-up questions.
     """
+    emit_progress(state, "quick_answer")
     meta = state.get("meta") or {}
     conversation_id = meta.get("conversation_id", "conv-unknown")
     user_id = meta.get("user_id", "user-unknown")

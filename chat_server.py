@@ -19,9 +19,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from decimal import Decimal
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -674,13 +674,18 @@ async def chat(req: ChatRequest):
 
 
 @app.post("/external/send")
-async def external_send(req: ExternalSendRequest):
+async def external_send(req: ExternalSendRequest, request: Request):
     """External endpoint for lambda integration.
 
     Returns {content, agent_type} so the lambda can determine
     how to handle the response.
+
+    If the caller sends Accept: application/x-ndjson, returns a streaming
+    NDJSON response with status lines followed by a result line.
+    Otherwise returns the same JSON as before (backward-compatible).
     """
     import traceback
+    from progress_signals import register_queue, unregister_queue
 
     conv_id = req.conversation_id or str(uuid.uuid4())
     key = _conv_key(req.user_id, conv_id)
@@ -707,25 +712,82 @@ async def external_send(req: ExternalSendRequest):
 
     state = _conversations[key]
 
-    graph = _get_graph()
+    accept = request.headers.get("accept", "")
+    wants_ndjson = "application/x-ndjson" in accept
 
-    try:
-        state, debug = await _run_turn(graph, state, user_text, skip_persistence=True)
-    except Exception as exc:
-        tb = traceback.format_exc()
-        _chat_logger.error(f"[external/send] ERROR: {exc}\n{tb}")
-        return {"content": f"[Server error] {exc}", "agent_type": "error"}
+    if not wants_ndjson:
+        # ── Original JSON path (Lambda, curl without Accept header) ──
+        graph = _get_graph()
+        try:
+            state, debug = await _run_turn(graph, state, user_text, skip_persistence=True)
+        except Exception as exc:
+            tb = traceback.format_exc()
+            _chat_logger.error(f"[external/send] ERROR: {exc}\n{tb}")
+            return {"content": f"[Server error] {exc}", "agent_type": "error"}
 
-    _conversations[key] = state
+        _conversations[key] = state
+        reply = _last_assistant_message(state)
+        current_agent = state.routing.current_agent or ""
+        return {
+            "content": reply,
+            "agent_type": current_agent,
+            "conversation_id": conv_id,
+        }
 
-    reply = _last_assistant_message(state)
-    current_agent = state.routing.current_agent or ""
+    # ── Streaming NDJSON path (voice bridge) ─────────────────────────
+    q = register_queue(conv_id)
 
-    return {
-        "content": reply,
-        "agent_type": current_agent,
-        "conversation_id": conv_id,
-    }
+    async def _ndjson_generator():
+        graph = _get_graph()
+        task = asyncio.create_task(
+            _run_turn(graph, state, user_text, skip_persistence=True)
+        )
+        try:
+            while True:
+                if task.done():
+                    # Drain any remaining status events
+                    while not q.empty():
+                        try:
+                            evt = q.get_nowait()
+                            yield json.dumps(evt) + "\n"
+                        except asyncio.QueueEmpty:
+                            break
+                    break
+                try:
+                    evt = await asyncio.wait_for(q.get(), timeout=0.5)
+                    yield json.dumps(evt) + "\n"
+                except (asyncio.TimeoutError, TimeoutError):
+                    continue
+
+            # Get result from completed task
+            exc = task.exception() if task.done() else None
+            if exc:
+                tb = traceback.format_exc()
+                _chat_logger.error(f"[external/send] ERROR: {exc}\n{tb}")
+                yield json.dumps({
+                    "type": "result",
+                    "content": f"[Server error] {exc}",
+                    "agent_type": "error",
+                    "conversation_id": conv_id,
+                }) + "\n"
+            else:
+                result_state, debug = task.result()
+                _conversations[key] = result_state
+                reply = _last_assistant_message(result_state)
+                current_agent = result_state.routing.current_agent or ""
+                yield json.dumps({
+                    "type": "result",
+                    "content": reply,
+                    "agent_type": current_agent,
+                    "conversation_id": conv_id,
+                }) + "\n"
+        finally:
+            unregister_queue(conv_id)
+
+    return StreamingResponse(
+        _ndjson_generator(),
+        media_type="application/x-ndjson",
+    )
 
 
 class OnboardingIngestRequest(BaseModel):
