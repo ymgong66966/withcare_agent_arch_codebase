@@ -910,6 +910,139 @@ async def llm_info_collection_summarize(
         return default_parse_user_answer(user_latest_reply, previous_summary)
 
 
+def make_info_collection_handoff_decision_prompt(
+    *,
+    request_goal: str,
+    updated_summary: str,
+    readiness: str,
+    key_info_status: List[Dict[str, Any]],
+    missing_or_unclear: List[str],
+    user_signals: Dict[str, Any],
+    conversation_turns_with_agent: int,
+    user_latest_reply: str,
+    conversation_history: List[Dict[str, Any]],
+    known_facts: Dict[str, Any],
+    last_asked_questions: Optional[List[str]] = None,
+) -> str:
+    conversation_text = "\n".join([
+        f"[{msg.get('role', '').upper()}]: {msg.get('content', '')[:300]}"
+        for msg in conversation_history[-10:]
+    ])
+
+    return f"""You are deciding whether an information-collection agent should stop asking questions and hand off to the execution/search agent.
+
+This is a semantic decision. Do not use brittle keyword matching. Infer the user's intent from the full conversation, the assistant's last questions, and the collected information.
+
+## Request Goal
+{request_goal}
+
+## Collected Information Summary
+{updated_summary or "None"}
+
+## Current Readiness From Summarizer
+{readiness}
+
+## Key Info Status
+{json.dumps(key_info_status or [], indent=2, ensure_ascii=False)}
+
+## Remaining Questions / Unclear Items
+{json.dumps(missing_or_unclear or [], indent=2, ensure_ascii=False)}
+
+## User Signals From Summarizer
+{json.dumps(user_signals or {}, indent=2, ensure_ascii=False)}
+
+## Conversation Turns Spent In Info Collection
+{conversation_turns_with_agent}
+
+## Recent Conversation
+{conversation_text}
+
+## User's Latest Reply
+{user_latest_reply}
+
+## Questions Asked Last Turn
+{chr(10).join([f"- {q}" for q in last_asked_questions]) if last_asked_questions else "None"}
+
+## Known Facts
+{json.dumps(known_facts, indent=2, ensure_ascii=False)}
+
+## Decision Guidelines
+
+Hand off when the request has enough actionable detail for the next agent to do useful work, even if optional details remain. In practical caregiver search tasks, the core is usually: who/what the care is for, the care need or service type, and a location/service area. Budget, schedule, timeline, language, and preferences improve the search but should not always block it after multiple collection turns.
+
+Also hand off when the user has semantically confirmed the collected summary, accepted the current information as sufficient, or appears ready for the assistant to act, as long as the core actionable details are present.
+
+Do not hand off if the request is still too ambiguous to execute responsibly, such as no location/service area for a local provider search, no meaningful care need/service type, or the user is correcting/contradicting important facts that need clarification first.
+
+If current_readiness is "can_proceed_but_incomplete" and the agent has already spent multiple turns collecting information, prefer handoff unless the remaining questions are truly blocking.
+
+## Output JSON
+{{
+  "should_handoff": true | false,
+  "confidence": "high" | "medium" | "low",
+  "reason": "Brief explanation of the semantic decision",
+  "blocking_questions": ["Only questions that truly block execution"],
+  "suggested_transition_response": "If should_handoff is true, a short natural sentence telling the user we have enough to proceed. Match the user's language."
+}}
+"""
+
+
+async def llm_info_collection_handoff_decision(
+    *,
+    request_goal: str,
+    updated_summary: str,
+    readiness: str,
+    key_info_status: List[Dict[str, Any]],
+    missing_or_unclear: List[str],
+    user_signals: Dict[str, Any],
+    conversation_turns_with_agent: int,
+    user_latest_reply: str,
+    conversation_history: List[Dict[str, Any]],
+    known_facts: Dict[str, Any],
+    client: Any,
+    last_asked_questions: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    prompt = make_info_collection_handoff_decision_prompt(
+        request_goal=request_goal,
+        updated_summary=updated_summary,
+        readiness=readiness,
+        key_info_status=key_info_status,
+        missing_or_unclear=missing_or_unclear,
+        user_signals=user_signals,
+        conversation_turns_with_agent=conversation_turns_with_agent,
+        user_latest_reply=user_latest_reply,
+        conversation_history=conversation_history,
+        known_facts=known_facts,
+        last_asked_questions=last_asked_questions,
+    )
+
+    try:
+        response = await client.async_chat(
+            prompt=prompt,
+            max_tokens=500,
+            temperature=0.0,
+        )
+        response_text = response.strip()
+        json_start = response_text.find('{')
+        json_end = response_text.rfind('}') + 1
+        if json_start >= 0 and json_end > json_start:
+            result = json.loads(response_text[json_start:json_end])
+        else:
+            result = json.loads(response_text)
+        if "should_handoff" not in result:
+            raise ValueError("Missing should_handoff")
+        return result
+    except Exception as e:
+        logger.warning(f"LLM info collection handoff decision failed: {e}. Falling back to no override.")
+        return {
+            "should_handoff": False,
+            "confidence": "low",
+            "reason": "handoff decision failed",
+            "blocking_questions": missing_or_unclear or [],
+            "suggested_transition_response": "",
+        }
+
+
 def default_parse_user_answer(user_reply: str, previous_summary: str = "") -> Dict[str, Any]:
     """Fallback heuristic-based answer parsing."""
     # Simple concatenation

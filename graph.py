@@ -24,6 +24,7 @@ from prompts import (
     default_parse_user_answer,
     llm_collection_plan,
     llm_info_collection_summarize,
+    llm_info_collection_handoff_decision,
     llm_prerequisite_acceptance_response,
     make_turn_mode_prompt,
     default_turn_mode_decision,
@@ -758,7 +759,9 @@ def _is_user_answering_questions(state: Dict[str, Any]) -> bool:
     return bool(req.get("awaiting_user_input")) and len(_asked_questions_from_request(req)) > 0
 
 def _user_says_decline_more_questions(text: str) -> bool:
-    return any(x in text for x in ["不想回答", "别问了", "先用现有的", "不用问了", "proceed", "go ahead", "先继续"])
+    # Deprecated: proceed/confirmation intent is now handled by
+    # llm_info_collection_handoff_decision instead of keyword matching.
+    return False
 
 def _user_yes_no(text: str) -> Optional[bool]:
     yes = any(x in text for x in ["要", "好", "可以", "是", "yes", "ok", "sure"])
@@ -1923,6 +1926,31 @@ async def info_collection_node(state: Dict[str, Any]) -> Dict[str, Any]:
     if user_signals.get("wants_to_proceed_with_existing_info") is True:
         readiness = "ready"
 
+    handoff_decision = {}
+    if readiness != "ready":
+        handoff_decision = await llm_info_collection_handoff_decision(
+            request_goal=req.get("goal", ""),
+            updated_summary=updated_summary,
+            readiness=readiness,
+            key_info_status=summary_result.get("key_info_status", []),
+            missing_or_unclear=summary_result.get("missing_or_unclear", []),
+            user_signals=user_signals,
+            conversation_turns_with_agent=conversation_turns + 1,
+            user_latest_reply=user_text,
+            conversation_history=messages,
+            known_facts=known_facts,
+            client=client,
+            last_asked_questions=last_asked_questions,
+        )
+        if (
+            handoff_decision.get("should_handoff") is True
+            and handoff_decision.get("confidence") in ("high", "medium")
+        ):
+            readiness = "ready"
+            transition_response = handoff_decision.get("suggested_transition_response")
+            if transition_response:
+                suggested_response = transition_response
+
     # LLM-driven consent: if user agrees to handle prerequisite
     # Look for consent in current LLM signals + stored prerequisites from previous turn
     stored_prerequisites = info_state.get("detected_prerequisites") or []
@@ -2058,6 +2086,7 @@ async def info_collection_node(state: Dict[str, Any]) -> Dict[str, Any]:
         "info_collection_debug": {
             "summary_result": summary_result,
             "readiness": readiness,
+            "handoff_decision": handoff_decision,
             "detected_prerequisites": detected_prerequisites,
             "profile_facts_retrieved": profile_facts_dict,
             "disputed_fact_keys": disputed_keys,
